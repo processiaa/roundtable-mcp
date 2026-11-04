@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "roundtable-mcp"
+version = "0.1.0"
+description = "MCP server for multi-agent debates across Antigravity, Claude, ChatGPT, and Cursor"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "mcp>=1.2.0",
+]
+
+[project.scripts]
+roundtable-mcp = "roundtable_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/roundtable_mcp"]
