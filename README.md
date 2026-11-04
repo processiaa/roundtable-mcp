@@ -1,21 +1,24 @@
 # roundtable-mcp
 
-Model Context Protocol (MCP) server for orchestrating structured multi-agent debates across different AI clients, including Google Antigravity, Claude Desktop, Claude Code, ChatGPT, and Cursor.
+Model Context Protocol (MCP) server for orchestrating structured multi-agent debates and N-participant roundtables across different AI clients, including Google Antigravity, Claude Desktop, Claude Code, ChatGPT, and Cursor.
 
 Supports both **Node.js (`npx`)** and **Python (`uvx`)** out of the box from the same repository.
 
 Because all connected clients share the same persistent debate state (`~/.roundtable_mcp/debates.json`), you can either:
-1. **Pit different AI clients against each other** (for example, Antigravity defending Position A while Claude defends Position B).
-2. **Run automated multi-agent debates** inside a single client using subagents.
+1. **Pit different AI clients against each other automatically** using `wait_for_turn` (for example, Antigravity defending Position A while Claude defends Position B).
+2. **Run automated multi-agent debates or N-role roundtables** inside a single client using subagents.
 
 ---
 
 ## Features and MCP Tools
 
-- `create_debate`: Initialize a debate room with a topic, Position A, Position B, rules, and maximum rounds.
+- `create_debate`: Initialize a classic 2-way debate (`position_a` vs. `position_b`) or an N-participant roundtable (`participants` array) with word limits, max rounds, and strict turn enforcement.
 - `list_debates`: List all active or closed debates and see whose turn is next.
-- `read_debate`: Read the full debate transcript, metadata, and turn status.
-- `post_argument`: Submit an argument or rebuttal for Position A or Position B.
+- `read_debate`: Read the full debate transcript, metadata, scoreboard, and turn status.
+- `post_argument`: Submit an argument or rebuttal. Validates strict turn order (`next_expected_position`) and tracks word counts.
+- `wait_for_turn`: Block/poll until the opposing client finishes its turn, enabling hands-free live debates between separate AI clients (e.g. Antigravity vs. Claude).
+- `score_turn`: Score any turn on a 1-10 rubric (`technical_evidence`, `rebuttal_strength`, `operational_viability`, `clarity`) and automatically compute the aggregate `scoreboard`.
+- `export_debate`: Export any debate as an **Architecture Decision Record (`adr`)** or clean **Markdown transcript (`markdown`)**, optionally writing it directly to a file in your repository.
 - `close_debate`: Close the debate and record the final synthesis and verdict.
 - `delete_debate`: Remove a debate session from storage.
 
@@ -94,20 +97,20 @@ claude mcp add roundtable-mcp -- uvx --from git+https://github.com/processiaa/ro
 
 ## Usage Examples
 
-### Scenario A: Cross-Client Debate (Antigravity vs. Claude)
+### Scenario A: Hands-Free Cross-Client Debate (Antigravity vs. Claude)
 
 1. **In Antigravity:**
-   > "Using `roundtable-mcp`, create a debate with ID `arch-01` on the topic 'Microservices vs Modular Monolith for a 10-engineer startup', where Position A is Microservices and Position B is Modular Monolith (3 rounds). Then post Turn 1 as Antigravity defending Position A."
+   > "Using `roundtable-mcp`, create a 3-round debate `arch-01` on 'Microservices vs Modular Monolith'. For all 3 rounds, defend Position A: call `wait_for_turn` for Position A, post your argument with `post_argument`, and repeat until all rounds complete."
 
 2. **In Claude:**
-   > "Read debate `arch-01` from `roundtable-mcp` and post Turn 2 as Claude defending Position B, rebutting Antigravity's argument."
+   > "Join debate `arch-01` in `roundtable-mcp` defending Position B. For all 3 rounds, call `wait_for_turn` for Position B, rebut Position A using `post_argument`, and repeat until all rounds complete."
 
-3. **Closing the Debate:**
-   > "Read debate `arch-01` from `roundtable-mcp`, evaluate all rounds objectively, and close the debate with a final verdict."
+3. **Scoring, Closing, and Exporting an ADR:**
+   > "Read debate `arch-01`, score each turn with `score_turn`, close the debate with a final verdict, and export it as an ADR to `docs/adr/001-architecture.md` using `export_debate`."
 
-### Scenario B: Automated Subagent Debate in One Client
+### Scenario B: Multi-Role Roundtable (3+ Perspectives)
 
-> "Create a 3-round debate in `roundtable-mcp` about PostgreSQL vs MongoDB for an event-driven billing system. Spawn two subagents to debate each side turn by turn using the MCP tools, and then close the debate with your final synthesis."
+> "Create a roundtable in `roundtable-mcp` with 3 participants (`A`: Backend Architect, `B`: DevSecOps Engineer, `C`: FinOps Specialist) on 'Self-hosted Kubernetes vs Serverless Containers'. Run 2 rounds across subagents, score each turn, close with a synthesis, and export the ADR."
 
 ---
 

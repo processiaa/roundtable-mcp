@@ -1,8 +1,9 @@
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("roundtable-mcp")
@@ -24,44 +25,219 @@ def _load_debates() -> dict:
 
 def _save_debates(data: dict) -> None:
     STORAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = STORAGE_FILE.with_suffix(".tmp")
+    temp_file = STORAGE_FILE.with_suffix(f".{os.getpid()}.tmp")
     temp_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     temp_file.replace(STORAGE_FILE)
+
+
+def _normalize_participants(
+    position_a: Optional[str],
+    position_b: Optional[str],
+    participants_input: Optional[list[Any]],
+) -> list[dict[str, str]]:
+    if isinstance(participants_input, list) and len(participants_input) >= 2:
+        normalized = []
+        for idx, item in enumerate(participants_input):
+            default_id = chr(65 + idx)
+            if isinstance(item, str):
+                normalized.append({"id": default_id, "role": item})
+            elif isinstance(item, dict):
+                p_id = str(item.get("id") or default_id).strip().upper()
+                role = str(item.get("role") or item.get("position") or f"Position {default_id}")
+                normalized.append({"id": p_id, "role": role})
+        return normalized
+    return [
+        {"id": "A", "role": position_a or "Position A"},
+        {"id": "B", "role": position_b or "Position B"},
+    ]
+
+
+def _compute_scoreboard(debate: dict) -> dict:
+    board: dict[str, dict[str, Any]] = {}
+    participants = debate.get("participants") or [
+        {"id": "A", "role": debate.get("position_a") or "Position A"},
+        {"id": "B", "role": debate.get("position_b") or "Position B"},
+    ]
+    for p in participants:
+        board[p["id"]] = {
+            "role": p["role"],
+            "scored_turns": 0,
+            "total_points": 0.0,
+            "average_score": 0.0,
+        }
+    for turn in debate.get("turns", []):
+        score = turn.get("score")
+        if isinstance(score, dict) and isinstance(score.get("average"), (int, float)):
+            pos = turn.get("position", "A")
+            if pos not in board:
+                board[pos] = {
+                    "role": pos,
+                    "scored_turns": 0,
+                    "total_points": 0.0,
+                    "average_score": 0.0,
+                }
+            board[pos]["scored_turns"] += 1
+            board[pos]["total_points"] = round(
+                board[pos]["total_points"] + float(score["average"]), 2
+            )
+            board[pos]["average_score"] = round(
+                board[pos]["total_points"] / board[pos]["scored_turns"], 2
+            )
+    return board
+
+
+def _format_debate_markdown(debate: dict, fmt: str = "adr") -> str:
+    participants = debate.get("participants") or [
+        {"id": "A", "role": debate.get("position_a") or "Position A"},
+        {"id": "B", "role": debate.get("position_b") or "Position B"},
+    ]
+    lines: list[str] = []
+
+    if fmt == "adr":
+        lines.append(f"# ADR: {debate.get('topic')}")
+        lines.append("")
+        lines.append(f"- **Debate ID:** `{debate.get('debate_id')}`")
+        status_label = "Accepted / Closed" if debate.get("status") == "closed" else "Proposed / Open"
+        lines.append(f"- **Status:** {status_label}")
+        lines.append(f"- **Created At:** {debate.get('created_at')}")
+        if debate.get("closed_at"):
+            lines.append(f"- **Decided At:** {debate.get('closed_at')}")
+        if debate.get("winner"):
+            lines.append(f"- **Selected Outcome:** {debate.get('winner')}")
+        lines.append("")
+        lines.append("## 1. Context and Problem Statement")
+        lines.append("")
+        lines.append(f"Topic evaluated: **{debate.get('topic')}**")
+        lines.append("")
+        lines.append(f"Rules applied: {debate.get('rules') or 'Standard technical debate rules.'}")
+        lines.append("")
+        lines.append("## 2. Considered Options (Positions)")
+        lines.append("")
+        for p in participants:
+            lines.append(f"- **Position {p['id']}:** {p['role']}")
+        lines.append("")
+        lines.append("## 3. Deliberation and Key Arguments")
+        lines.append("")
+        for turn in debate.get("turns", []):
+            lines.append(
+                f"### Round {turn.get('round')} - Turn {turn.get('turn')}: "
+                f"{turn.get('agent')} (Position {turn.get('position')})"
+            )
+            lines.append("")
+            lines.append(str(turn.get("argument", "")))
+            score = turn.get("score")
+            if isinstance(score, dict):
+                lines.append("")
+                lines.append(
+                    f"*Score ({score.get('judge')}): {score.get('average')}/10 "
+                    f"(Evidence: {score.get('technical_evidence')}, "
+                    f"Rebuttal: {score.get('rebuttal_strength')}, "
+                    f"Viability: {score.get('operational_viability')}, "
+                    f"Clarity: {score.get('clarity')})*"
+                )
+                if score.get("notes"):
+                    lines.append(f"*Judge Notes: {score.get('notes')}*")
+            lines.append("")
+        scoreboard = debate.get("scoreboard")
+        if isinstance(scoreboard, dict):
+            lines.append("## 4. Evaluation Scoreboard")
+            lines.append("")
+            lines.append("| Position | Role | Scored Turns | Total Points | Average Score (1-10) |")
+            lines.append("| :--- | :--- | :---: | :---: | :---: |")
+            for pos_id, stats in scoreboard.items():
+                lines.append(
+                    f"| {pos_id} | {stats.get('role')} | {stats.get('scored_turns')} | "
+                    f"{stats.get('total_points')} | {stats.get('average_score')} |"
+                )
+            lines.append("")
+        lines.append("## 5. Decision Outcome and Verdict")
+        lines.append("")
+        lines.append(f"**Outcome:** {debate.get('winner') or 'Pending'}")
+        lines.append("")
+        lines.append(
+            debate.get("verdict") or "Debate is still open; no final verdict recorded yet."
+        )
+        lines.append("")
+    else:
+        lines.append(f"# Debate Transcript: {debate.get('topic')}")
+        lines.append("")
+        lines.append(f"- **ID:** `{debate.get('debate_id')}`")
+        lines.append(f"- **Status:** {debate.get('status')}")
+        lines.append(f"- **Rounds:** {debate.get('max_rounds')}")
+        lines.append("")
+        lines.append("## Positions")
+        lines.append("")
+        for p in participants:
+            lines.append(f"- **{p['id']}:** {p['role']}")
+        lines.append("")
+        lines.append("## Turns")
+        lines.append("")
+        for turn in debate.get("turns", []):
+            lines.append(
+                f"### [Round {turn.get('round')} | Turn {turn.get('turn')}] "
+                f"{turn.get('agent')} (Position {turn.get('position')})"
+            )
+            lines.append("")
+            lines.append(str(turn.get("argument", "")))
+            lines.append("")
+        if debate.get("verdict"):
+            lines.append("## Verdict")
+            lines.append("")
+            lines.append(f"**Winner / Synthesis:** {debate.get('winner')}")
+            lines.append("")
+            lines.append(str(debate.get("verdict")))
+            lines.append("")
+
+    return "\n".join(lines)
 
 
 @mcp.tool()
 def create_debate(
     debate_id: str,
     topic: str,
-    position_a: str,
-    position_b: str,
+    position_a: Optional[str] = None,
+    position_b: Optional[str] = None,
+    participants: Optional[list[dict[str, str]]] = None,
     max_rounds: int = 3,
+    max_words: int = 200,
+    strict_turn_order: bool = True,
     rules: str = "Be concise, address the previous turn directly, and provide technical evidence.",
 ) -> str:
-    """Create a new debate session with a topic, two opposing positions, and a maximum number of rounds."""
+    """Create a new debate or N-participant roundtable session with a topic, positions/participants, and rules."""
     debates = _load_debates()
+    norm_participants = _normalize_participants(position_a, position_b, participants)
+
     debates[debate_id] = {
         "debate_id": debate_id,
         "topic": topic,
-        "position_a": position_a,
-        "position_b": position_b,
+        "position_a": norm_participants[0]["role"],
+        "position_b": norm_participants[1]["role"] if len(norm_participants) > 1 else "Position B",
+        "participants": norm_participants,
         "max_rounds": max_rounds,
+        "max_words": max_words,
+        "strict_turn_order": strict_turn_order,
         "rules": rules,
         "status": "open",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "next_expected_position": "A",
+        "next_expected_position": norm_participants[0]["id"],
         "turns": [],
+        "scoreboard": _compute_scoreboard({"participants": norm_participants, "turns": []}),
         "verdict": None,
         "winner": None,
     }
     _save_debates(debates)
+
+    participant_summary = "\n".join(
+        f"Position {p['id']}: {p['role']}" for p in norm_participants
+    )
     return (
         f"Debate '{debate_id}' created.\n"
         f"Topic: {topic}\n"
-        f"Position A: {position_a}\n"
-        f"Position B: {position_b}\n"
-        f"Max rounds: {max_rounds} ({max_rounds * 2} total turns)\n"
-        f"Next turn: Position A"
+        f"{participant_summary}\n"
+        f"Max rounds: {max_rounds} ({max_rounds * len(norm_participants)} total turns)\n"
+        f"Word limit per turn: {max_words}\n"
+        f"Strict turn order: {strict_turn_order}\n"
+        f"Next turn: Position {norm_participants[0]['id']}"
     )
 
 
@@ -76,14 +252,16 @@ def list_debates(status: str = "all") -> str:
     for d_id, info in debates.items():
         if status != "all" and info.get("status") != status:
             continue
+        num_participants = len(info.get("participants") or []) or 2
         filtered.append(
             {
                 "debate_id": d_id,
                 "topic": info.get("topic"),
                 "status": info.get("status"),
                 "turns_count": len(info.get("turns", [])),
-                "max_turns": info.get("max_rounds", 3) * 2,
+                "max_turns": info.get("max_rounds", 3) * num_participants,
                 "next_expected_position": info.get("next_expected_position"),
+                "winner": info.get("winner"),
             }
         )
     return json.dumps(filtered, indent=2, ensure_ascii=False)
@@ -91,7 +269,7 @@ def list_debates(status: str = "all") -> str:
 
 @mcp.tool()
 def read_debate(debate_id: str) -> str:
-    """Read the full state and transcript of a debate, including whose turn is next."""
+    """Read the full state, scoreboard, and transcript of a debate, including whose turn is next."""
     debates = _load_debates()
     if debate_id not in debates:
         available = list(debates.keys())
@@ -105,8 +283,9 @@ def post_argument(
     agent_name: str,
     position: str,
     argument: str,
+    force: bool = False,
 ) -> str:
-    """Post an argument or rebuttal to an open debate. Position should be 'A' or 'B' (or the position description)."""
+    """Post an argument or rebuttal to an open debate. Enforces turn order unless force=True."""
     debates = _load_debates()
     if debate_id not in debates:
         return f"Debate '{debate_id}' not found."
@@ -115,20 +294,41 @@ def post_argument(
     if debate["status"] != "open":
         return f"Debate '{debate_id}' is already closed."
 
+    participants = debate.get("participants") or [
+        {"id": "A", "role": debate.get("position_a") or "Position A"},
+        {"id": "B", "role": debate.get("position_b") or "Position B"},
+    ]
     turns = debate["turns"]
-    max_turns = debate.get("max_rounds", 3) * 2
+    max_turns = debate.get("max_rounds", 3) * len(participants)
     if len(turns) >= max_turns:
         return (
             f"Debate '{debate_id}' has reached the maximum of {max_turns} turns. "
             f"Please call close_debate to record a final verdict."
         )
 
-    normalized_pos = position.strip().upper()
-    if normalized_pos not in ("A", "B"):
-        normalized_pos = debate.get("next_expected_position", "A")
+    requested_pos = position.strip().upper()
+    expected_pos = str(debate.get("next_expected_position", "A")).strip().upper()
+
+    if debate.get("strict_turn_order", True) and not force and requested_pos != expected_pos:
+        return (
+            f"Out-of-turn submission rejected: Position '{requested_pos}' attempted to post, "
+            f"but next_expected_position is '{expected_pos}'. "
+            f"Wait for Position '{expected_pos}' to complete its turn (or use wait_for_turn)."
+        )
+
+    valid_ids = [p["id"].upper() for p in participants]
+    normalized_pos = requested_pos if requested_pos in valid_ids else expected_pos
+
+    word_count = len(argument.strip().split())
+    max_words = debate.get("max_words", 200)
+    word_warning = (
+        f" Note: Argument has {word_count} words (exceeds recommended limit of {max_words} words)."
+        if word_count > max_words
+        else ""
+    )
 
     turn_number = len(turns) + 1
-    current_round = (turn_number + 1) // 2
+    current_round = ((turn_number - 1) // len(participants)) + 1
 
     turns.append(
         {
@@ -136,19 +336,172 @@ def post_argument(
             "round": current_round,
             "agent": agent_name,
             "position": normalized_pos,
+            "word_count": word_count,
             "argument": argument,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     )
 
-    debate["next_expected_position"] = "B" if normalized_pos == "A" else "A"
+    current_idx = valid_ids.index(normalized_pos)
+    next_idx = (current_idx + 1) % len(valid_ids)
+    debate["next_expected_position"] = valid_ids[next_idx]
     _save_debates(debates)
 
     remaining = max_turns - turn_number
     return (
-        f"Turn {turn_number} (Round {current_round}) recorded by {agent_name} [Position {normalized_pos}]. "
-        f"Remaining turns: {remaining}. Next expected position: {debate['next_expected_position']}."
+        f"Turn {turn_number} (Round {current_round}) recorded by {agent_name} "
+        f"[Position {normalized_pos}, {word_count} words]. "
+        f"Remaining turns: {remaining}. Next expected position: {debate['next_expected_position']}.{word_warning}"
     )
+
+
+@mcp.tool()
+def wait_for_turn(
+    debate_id: str,
+    position: str,
+    timeout_seconds: int = 90,
+) -> str:
+    """Wait until it is the specified position's turn in an open debate."""
+    target_pos = position.strip().upper()
+    clamped_timeout = min(max(timeout_seconds, 5), 300)
+    deadline = time.monotonic() + clamped_timeout
+
+    while time.monotonic() < deadline:
+        debates = _load_debates()
+        if debate_id not in debates:
+            return f"Debate '{debate_id}' not found."
+        debate = debates[debate_id]
+        participants = debate.get("participants") or [
+            {"id": "A", "role": debate.get("position_a")},
+            {"id": "B", "role": debate.get("position_b")},
+        ]
+        max_turns = debate.get("max_rounds", 3) * len(participants)
+        turns = debate.get("turns", [])
+
+        if debate.get("status") != "open":
+            return json.dumps(
+                {
+                    "event": "debate_closed",
+                    "status": debate.get("status"),
+                    "winner": debate.get("winner"),
+                    "verdict": debate.get("verdict"),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+
+        if len(turns) >= max_turns:
+            return json.dumps(
+                {
+                    "event": "max_turns_reached",
+                    "turns_count": len(turns),
+                    "max_turns": max_turns,
+                    "last_turn": turns[-1] if turns else None,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+
+        if str(debate.get("next_expected_position", "")).upper() == target_pos:
+            return json.dumps(
+                {
+                    "event": "your_turn",
+                    "debate_id": debate_id,
+                    "your_position": target_pos,
+                    "turns_completed": len(turns),
+                    "max_turns": max_turns,
+                    "last_turn": turns[-1] if turns else None,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+
+        time.sleep(1.5)
+
+    debates = _load_debates()
+    current = debates.get(debate_id, {})
+    return json.dumps(
+        {
+            "event": "timeout",
+            "message": f"Timed out after {timeout_seconds}s waiting for Position {target_pos}.",
+            "next_expected_position": current.get("next_expected_position"),
+            "turns_completed": len(current.get("turns", [])),
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+def score_turn(
+    debate_id: str,
+    turn_number: int,
+    technical_evidence: float,
+    rebuttal_strength: float,
+    operational_viability: float,
+    clarity: float,
+    judge_name: str = "Judge",
+    notes: str = "",
+) -> str:
+    """Score a specific turn using a structured rubric (1-10) and update the debate scoreboard."""
+    debates = _load_debates()
+    if debate_id not in debates:
+        return f"Debate '{debate_id}' not found."
+
+    debate = debates[debate_id]
+    target_turn = next((t for t in debate.get("turns", []) if t.get("turn") == turn_number), None)
+    if not target_turn:
+        return f"Turn {turn_number} not found in debate '{debate_id}'."
+
+    average = round(
+        (
+            float(technical_evidence)
+            + float(rebuttal_strength)
+            + float(operational_viability)
+            + float(clarity)
+        )
+        / 4.0,
+        2,
+    )
+
+    target_turn["score"] = {
+        "judge": judge_name,
+        "technical_evidence": float(technical_evidence),
+        "rebuttal_strength": float(rebuttal_strength),
+        "operational_viability": float(operational_viability),
+        "clarity": float(clarity),
+        "average": average,
+        "notes": notes,
+        "scored_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    debate["scoreboard"] = _compute_scoreboard(debate)
+    _save_debates(debates)
+    return (
+        f"Turn {turn_number} ({target_turn.get('agent')}, Position {target_turn.get('position')}) "
+        f"scored: {average}/10.\n"
+        f"Updated Scoreboard:\n{json.dumps(debate['scoreboard'], indent=2, ensure_ascii=False)}"
+    )
+
+
+@mcp.tool()
+def export_debate(
+    debate_id: str,
+    format: str = "adr",
+    output_path: Optional[str] = None,
+) -> str:
+    """Export a debate as a clean Markdown transcript or Architecture Decision Record (ADR), optionally saving it to a file."""
+    debates = _load_debates()
+    if debate_id not in debates:
+        return f"Debate '{debate_id}' not found."
+
+    markdown = _format_debate_markdown(debates[debate_id], format)
+    if output_path:
+        target = Path(output_path).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(markdown, encoding="utf-8")
+        return f"Debate '{debate_id}' exported ({format}) to {target}\n\n{markdown}"
+    return markdown
 
 
 @mcp.tool()
@@ -157,7 +510,7 @@ def close_debate(
     verdict: str,
     winner: Optional[str] = "synthesis",
 ) -> str:
-    """Close a debate and record the final synthesis, conclusion, or winning position ('A', 'B', or 'synthesis')."""
+    """Close a debate and record the final synthesis, conclusion, or winning position."""
     debates = _load_debates()
     if debate_id not in debates:
         return f"Debate '{debate_id}' not found."
@@ -167,6 +520,7 @@ def close_debate(
     debate["verdict"] = verdict
     debate["winner"] = winner
     debate["closed_at"] = datetime.now(timezone.utc).isoformat()
+    debate["scoreboard"] = _compute_scoreboard(debate)
     _save_debates(debates)
     return f"Debate '{debate_id}' closed. Winner/Outcome: {winner}."
 
@@ -183,18 +537,34 @@ def delete_debate(debate_id: str) -> str:
 
 
 @mcp.prompt()
-def moderate_debate(topic: str, position_a: str, position_b: str, rounds: int = 3) -> str:
-    """Prompt template to instruct an agent how to run or participate in a structured debate."""
+def moderate_debate(
+    topic: str = "",
+    position_a: str = "",
+    position_b: str = "",
+    rounds: int = 3,
+) -> str:
+    """Prompt template to start, moderate, or participate in a structured multi-agent debate."""
+    has_topic = bool(topic and topic.strip() and topic.strip() != "undefined")
+    if not has_topic:
+        return (
+            "I want to start a structured debate using the `roundtable-mcp` server.\n\n"
+            "Since I have not specified the topic or positions yet:\n"
+            "1. First call `list_debates` on `roundtable-mcp` to check if there is already an open debate to join.\n"
+            "2. Ask me what topic and positions (or multiple roundtable roles) I want to debate, and whether I want to run it automatically here with subagents or across different AI clients using `wait_for_turn`.\n"
+            "3. Once I confirm, create the debate with `create_debate`, run the rounds, score the turns with `score_turn`, close with `close_debate`, and offer to export an ADR using `export_debate`."
+        )
+
     return (
         f"Start a structured debate using the roundtable-mcp tools.\n"
         f"Topic: {topic}\n"
-        f"Position A: {position_a}\n"
-        f"Position B: {position_b}\n"
+        f"Position A: {position_a or 'Pro / Option A'}\n"
+        f"Position B: {position_b or 'Con / Option B'}\n"
         f"Rounds: {rounds}\n\n"
         f"Instructions:\n"
         f"1. Call create_debate with a descriptive debate_id.\n"
-        f"2. Alternate turns between Position A and Position B using post_argument (or spawn two subagents to represent each position).\n"
-        f"3. After {rounds} rounds, evaluate all arguments objectively and call close_debate with a final verdict."
+        f"2. Alternate turns between positions using post_argument (or spawn subagents to represent each position).\n"
+        f"3. Score each turn objectively using score_turn.\n"
+        f"4. After {rounds} rounds, call close_debate with a final verdict and export the result as an ADR using export_debate."
     )
 
 
