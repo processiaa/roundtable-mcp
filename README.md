@@ -1,32 +1,29 @@
 # roundtable-mcp
 
-Model Context Protocol (MCP) server for orchestrating structured multi-agent debates and N-participant roundtables across different AI clients, including Google Antigravity, Claude Desktop, Claude Code, ChatGPT, and Cursor.
+Model Context Protocol (MCP) server for orchestrating structured multi-agent debates and N-participant roundtables across **Google Antigravity** and **Anthropic Claude** (Claude Code / Claude Desktop).
 
 Supports both **Node.js (`npx`)** and **Python (`uvx`)** out of the box from the same repository.
-
-Because all connected clients share the same persistent debate state (`~/.roundtable_mcp/debates.json`), you can either:
-1. **Pit different AI clients against each other automatically** using `wait_for_turn` (for example, Antigravity defending Position A while Claude defends Position B).
-2. **Run automated multi-agent debates or N-role roundtables** inside a single client using subagents.
 
 ---
 
 ## Features and MCP Tools
 
-- `create_debate`: Initialize a classic 2-way debate (`position_a` vs. `position_b`) or an N-participant roundtable (`participants` array) with word limits, max rounds, and strict turn enforcement.
+- `get_client_models`: Automatically detects whether the connected client is **Antigravity** or **Claude** and returns the native models and effort levels for that platform:
+  - **Antigravity models:** `inherit`, `pro`, `flash`, `flash_lite` + effort (`high`, `medium`, `low`).
+  - **Claude models:** `inherit`, `opus`, `sonnet`, `haiku` + effort (`high` / `ultrathink`, `medium` / `think`, `low`).
+- `create_debate`: Initialize a 2-way debate or N-participant roundtable with platform-specific `default_model`, `default_effort`, or per-participant model/effort overrides.
 - `list_debates`: List all active or closed debates and see whose turn is next.
-- `read_debate`: Read the full debate transcript, metadata, scoreboard, and turn status.
-- `post_argument`: Submit an argument or rebuttal. Validates strict turn order (`next_expected_position`) and tracks word counts.
-- `wait_for_turn`: Block/poll until the opposing client finishes its turn, enabling hands-free live debates between separate AI clients (e.g. Antigravity vs. Claude).
-- `score_turn`: Score any turn on a 1-10 rubric (`technical_evidence`, `rebuttal_strength`, `operational_viability`, `clarity`) and automatically compute the aggregate `scoreboard`.
-- `export_debate`: Export any debate as an **Architecture Decision Record (`adr`)** or clean **Markdown transcript (`markdown`)**, optionally writing it directly to a file in your repository.
+- `read_debate`: Read the full debate transcript, model/effort profiles, scoreboard, and turn status.
+- `post_argument`: Submit an argument or rebuttal. Enforces strict turn order, tracks word counts, and records the `model` and `effort` used on each turn.
+- `wait_for_turn`: Block/poll until the opposing client finishes its turn, returning the participant's assigned model and `effort_directive`.
+- `score_turn`: Score any turn on a 1-10 rubric (`technical_evidence`, `rebuttal_strength`, `operational_viability`, `clarity`) and update the aggregate `scoreboard`.
+- `export_debate`: Export any debate as an **Architecture Decision Record (`adr`)** or **Markdown transcript (`markdown`)** including model and effort metadata per turn.
 - `close_debate`: Close the debate and record the final synthesis and verdict.
 - `delete_debate`: Remove a debate session from storage.
 
 ---
 
 ## Quick Installation (Direct from GitHub)
-
-You do not need to clone this repository manually. Any MCP-compatible client can run it directly from GitHub using either **`npx`** (Node.js) or **`uvx`** (Python).
 
 ### Option A: Using `npx` (Node.js - Recommended)
 
@@ -86,31 +83,6 @@ claude mcp add roundtable-mcp -- npx -y github:processiaa/roundtable-mcp
   }
 }
 ```
-
-In **Claude Code (CLI)**:
-
-```bash
-claude mcp add roundtable-mcp -- uvx --from git+https://github.com/processiaa/roundtable-mcp.git roundtable-mcp
-```
-
----
-
-## Usage Examples
-
-### Scenario A: Hands-Free Cross-Client Debate (Antigravity vs. Claude)
-
-1. **In Antigravity:**
-   > "Using `roundtable-mcp`, create a 3-round debate `arch-01` on 'Microservices vs Modular Monolith'. For all 3 rounds, defend Position A: call `wait_for_turn` for Position A, post your argument with `post_argument`, and repeat until all rounds complete."
-
-2. **In Claude:**
-   > "Join debate `arch-01` in `roundtable-mcp` defending Position B. For all 3 rounds, call `wait_for_turn` for Position B, rebut Position A using `post_argument`, and repeat until all rounds complete."
-
-3. **Scoring, Closing, and Exporting an ADR:**
-   > "Read debate `arch-01`, score each turn with `score_turn`, close the debate with a final verdict, and export it as an ADR to `docs/adr/001-architecture.md` using `export_debate`."
-
-### Scenario B: Multi-Role Roundtable (3+ Perspectives)
-
-> "Create a roundtable in `roundtable-mcp` with 3 participants (`A`: Backend Architect, `B`: DevSecOps Engineer, `C`: FinOps Specialist) on 'Self-hosted Kubernetes vs Serverless Containers'. Run 2 rounds across subagents, score each turn, close with a synthesis, and export the ADR."
 
 ---
 

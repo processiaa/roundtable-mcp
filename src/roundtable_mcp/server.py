@@ -13,6 +13,105 @@ STORAGE_FILE = Path(
     os.environ.get("ROUNDTABLE_STORAGE_PATH", str(DEFAULT_STORAGE_DIR / "debates.json"))
 )
 
+PLATFORM_PROFILES: dict[str, dict[str, Any]] = {
+    "antigravity": {
+        "platform": "antigravity",
+        "display_name": "Google Antigravity",
+        "models": [
+            {"id": "inherit", "label": "Inherit (Usar el modelo actual de la sesion)"},
+            {"id": "pro", "label": "Pro (Maximo razonamiento arquitectonico)"},
+            {"id": "flash", "label": "Flash (Balance entre velocidad y capacidad)"},
+            {"id": "flash_lite", "label": "Flash Lite (Ultraligero y rapido)"},
+        ],
+        "efforts": [
+            {
+                "id": "high",
+                "label": "High (Analisis exhaustivo, casos borde y evidencia profunda)",
+                "directive": (
+                    "EFFORT=HIGH: Perform deep step-by-step technical analysis, evaluate production "
+                    "edge cases, failure modes, and concrete architectural trade-offs before formulating your argument."
+                ),
+            },
+            {
+                "id": "medium",
+                "label": "Medium (Balanceado, directo al punto con soporte tecnico)",
+                "directive": (
+                    "EFFORT=MEDIUM: Provide a balanced, well-structured technical argument directly "
+                    "addressing the opponent's points."
+                ),
+            },
+            {
+                "id": "low",
+                "label": "Low (Sintetico y rapido, enfocado en ideas clave)",
+                "directive": (
+                    "EFFORT=LOW: Be brief and direct, focusing only on the top 2 core arguments "
+                    "without extended deliberation."
+                ),
+            },
+        ],
+    },
+    "claude": {
+        "platform": "claude",
+        "display_name": "Anthropic Claude",
+        "models": [
+            {"id": "inherit", "label": "Inherit (Usar el modelo actual de la sesion)"},
+            {"id": "opus", "label": "Claude Opus (Maximo razonamiento complejo)"},
+            {"id": "sonnet", "label": "Claude Sonnet (Balance ideal velocidad/calidad)"},
+            {"id": "haiku", "label": "Claude Haiku (Rapido y ligero)"},
+        ],
+        "efforts": [
+            {
+                "id": "high",
+                "label": "High (Ultrathink - Razonamiento extendido al maximo)",
+                "directive": (
+                    "EFFORT=HIGH (ultrathink): Engage maximum extended thinking, stress-test every assumption, "
+                    "evaluate production failure modes, and build an airtight technical rebuttal."
+                ),
+            },
+            {
+                "id": "medium",
+                "label": "Medium (Think - Razonamiento estandar estructurado)",
+                "directive": (
+                    "EFFORT=MEDIUM (think): Think carefully through the opponent's points and provide "
+                    "a rigorous, structured counter-argument."
+                ),
+            },
+            {
+                "id": "low",
+                "label": "Low (Respuesta directa sin pensamiento extendido)",
+                "directive": "EFFORT=LOW: Respond concisely and directly with the primary technical arguments.",
+            },
+        ],
+    },
+}
+
+
+def _detect_client_platform(explicit_platform: Optional[str] = None) -> str:
+    if explicit_platform:
+        clean = explicit_platform.strip().lower()
+        if "claude" in clean:
+            return "claude"
+        if "antigravity" in clean or "agy" in clean or "gemini" in clean:
+            return "antigravity"
+    if (
+        os.environ.get("CLAUDECODE")
+        or os.environ.get("CLAUDE_ENTRYPOINT")
+        or os.environ.get("CLAUDE_CONFIG_DIR")
+    ):
+        return "claude"
+    if os.environ.get("ANTIGRAVITY_CLI_ALIAS") or os.environ.get("AGY_ACCOUNT"):
+        return "antigravity"
+    return "antigravity"
+
+
+def _get_effort_directive(platform: str, effort_id: str) -> str:
+    profile = PLATFORM_PROFILES.get(platform, PLATFORM_PROFILES["antigravity"])
+    clean_effort = (effort_id or "high").strip().lower()
+    for item in profile["efforts"]:
+        if item["id"] == clean_effort:
+            return item["directive"]
+    return profile["efforts"][0]["directive"]
+
 
 def _load_debates() -> dict:
     if not STORAGE_FILE.exists():
@@ -34,21 +133,62 @@ def _normalize_participants(
     position_a: Optional[str],
     position_b: Optional[str],
     participants_input: Optional[list[Any]],
+    default_platform: str = "antigravity",
+    default_model: str = "inherit",
+    default_effort: str = "high",
 ) -> list[dict[str, str]]:
+    effort_norm = (default_effort or "high").strip().lower()
     if isinstance(participants_input, list) and len(participants_input) >= 2:
         normalized = []
         for idx, item in enumerate(participants_input):
             default_id = chr(65 + idx)
             if isinstance(item, str):
-                normalized.append({"id": default_id, "role": item})
+                normalized.append(
+                    {
+                        "id": default_id,
+                        "role": item,
+                        "platform": default_platform,
+                        "model": default_model,
+                        "effort": effort_norm,
+                        "effort_directive": _get_effort_directive(default_platform, effort_norm),
+                    }
+                )
             elif isinstance(item, dict):
                 p_id = str(item.get("id") or default_id).strip().upper()
                 role = str(item.get("role") or item.get("position") or f"Position {default_id}")
-                normalized.append({"id": p_id, "role": role})
+                p_platform = str(item.get("platform") or default_platform).strip().lower()
+                p_model = str(item.get("model") or default_model).strip()
+                p_effort = str(item.get("effort") or effort_norm).strip().lower()
+                normalized.append(
+                    {
+                        "id": p_id,
+                        "role": role,
+                        "platform": p_platform,
+                        "model": p_model,
+                        "effort": p_effort,
+                        "effort_directive": _get_effort_directive(p_platform, p_effort),
+                    }
+                )
         return normalized
+
+    directive = _get_effort_directive(default_platform, effort_norm)
     return [
-        {"id": "A", "role": position_a or "Position A"},
-        {"id": "B", "role": position_b or "Position B"},
+        {
+            "id": "A",
+            "role": position_a or "Position A",
+            "platform": default_platform,
+            "model": default_model,
+            "effort": effort_norm,
+            "effort_directive": directive,
+        },
+        {
+            "id": "B",
+            "role": position_b or "Position B",
+            "platform": default_platform,
+            "model": default_model,
+            "effort": effort_norm,
+            "effort_directive": directive,
+        },
     ]
 
 
@@ -61,6 +201,9 @@ def _compute_scoreboard(debate: dict) -> dict:
     for p in participants:
         board[p["id"]] = {
             "role": p["role"],
+            "platform": p.get("platform") or debate.get("client_platform") or "antigravity",
+            "model": p.get("model") or debate.get("default_model") or "inherit",
+            "effort": p.get("effort") or debate.get("default_effort") or "high",
             "scored_turns": 0,
             "total_points": 0.0,
             "average_score": 0.0,
@@ -72,6 +215,9 @@ def _compute_scoreboard(debate: dict) -> dict:
             if pos not in board:
                 board[pos] = {
                     "role": pos,
+                    "platform": debate.get("client_platform") or "antigravity",
+                    "model": turn.get("model") or "inherit",
+                    "effort": turn.get("effort") or "high",
                     "scored_turns": 0,
                     "total_points": 0.0,
                     "average_score": 0.0,
@@ -99,6 +245,11 @@ def _format_debate_markdown(debate: dict, fmt: str = "adr") -> str:
         lines.append(f"- **Debate ID:** `{debate.get('debate_id')}`")
         status_label = "Accepted / Closed" if debate.get("status") == "closed" else "Proposed / Open"
         lines.append(f"- **Status:** {status_label}")
+        lines.append(f"- **Platform:** {debate.get('client_platform') or 'antigravity'}")
+        lines.append(
+            f"- **Default Model / Effort:** `{debate.get('default_model') or 'inherit'}` / "
+            f"`{debate.get('default_effort') or 'high'}`"
+        )
         lines.append(f"- **Created At:** {debate.get('created_at')}")
         if debate.get("closed_at"):
             lines.append(f"- **Decided At:** {debate.get('closed_at')}")
@@ -111,17 +262,22 @@ def _format_debate_markdown(debate: dict, fmt: str = "adr") -> str:
         lines.append("")
         lines.append(f"Rules applied: {debate.get('rules') or 'Standard technical debate rules.'}")
         lines.append("")
-        lines.append("## 2. Considered Options (Positions)")
+        lines.append("## 2. Considered Options (Positions and Model Profiles)")
         lines.append("")
         for p in participants:
-            lines.append(f"- **Position {p['id']}:** {p['role']}")
+            lines.append(
+                f"- **Position {p['id']}** [Platform: `{p.get('platform') or 'antigravity'}`, "
+                f"Model: `{p.get('model') or 'inherit'}`, Effort: `{p.get('effort') or 'high'}`]: {p['role']}"
+            )
         lines.append("")
         lines.append("## 3. Deliberation and Key Arguments")
         lines.append("")
         for turn in debate.get("turns", []):
+            model_tag = f" | Model: {turn.get('model')}" if turn.get("model") else ""
+            effort_tag = f" | Effort: {turn.get('effort')}" if turn.get("effort") else ""
             lines.append(
                 f"### Round {turn.get('round')} - Turn {turn.get('turn')}: "
-                f"{turn.get('agent')} (Position {turn.get('position')})"
+                f"{turn.get('agent')} (Position {turn.get('position')}{model_tag}{effort_tag})"
             )
             lines.append("")
             lines.append(str(turn.get("argument", "")))
@@ -142,11 +298,14 @@ def _format_debate_markdown(debate: dict, fmt: str = "adr") -> str:
         if isinstance(scoreboard, dict):
             lines.append("## 4. Evaluation Scoreboard")
             lines.append("")
-            lines.append("| Position | Role | Scored Turns | Total Points | Average Score (1-10) |")
-            lines.append("| :--- | :--- | :---: | :---: | :---: |")
+            lines.append(
+                "| Position | Role | Model | Effort | Scored Turns | Total Points | Average Score (1-10) |"
+            )
+            lines.append("| :--- | :--- | :---: | :---: | :---: | :---: | :---: |")
             for pos_id, stats in scoreboard.items():
                 lines.append(
-                    f"| {pos_id} | {stats.get('role')} | {stats.get('scored_turns')} | "
+                    f"| {pos_id} | {stats.get('role')} | {stats.get('model') or 'inherit'} | "
+                    f"{stats.get('effort') or 'high'} | {stats.get('scored_turns')} | "
                     f"{stats.get('total_points')} | {stats.get('average_score')} |"
                 )
             lines.append("")
@@ -168,14 +327,19 @@ def _format_debate_markdown(debate: dict, fmt: str = "adr") -> str:
         lines.append("## Positions")
         lines.append("")
         for p in participants:
-            lines.append(f"- **{p['id']}:** {p['role']}")
+            lines.append(
+                f"- **{p['id']}** (Model: `{p.get('model') or 'inherit'}`, "
+                f"Effort: `{p.get('effort') or 'high'}`): {p['role']}"
+            )
         lines.append("")
         lines.append("## Turns")
         lines.append("")
         for turn in debate.get("turns", []):
+            model_tag = f" | Model: {turn.get('model')}" if turn.get("model") else ""
+            effort_tag = f" | Effort: {turn.get('effort')}" if turn.get("effort") else ""
             lines.append(
                 f"### [Round {turn.get('round')} | Turn {turn.get('turn')}] "
-                f"{turn.get('agent')} (Position {turn.get('position')})"
+                f"{turn.get('agent')} (Position {turn.get('position')}{model_tag}{effort_tag})"
             )
             lines.append("")
             lines.append(str(turn.get("argument", "")))
@@ -192,24 +356,53 @@ def _format_debate_markdown(debate: dict, fmt: str = "adr") -> str:
 
 
 @mcp.tool()
+def get_client_models(platform: Optional[str] = None) -> str:
+    """Return the available models and effort levels for Antigravity ('inherit', 'pro', 'flash', 'flash_lite') or Claude ('inherit', 'opus', 'sonnet', 'haiku')."""
+    detected = _detect_client_platform(platform)
+    return json.dumps(
+        {
+            "detected_platform": detected,
+            "active_profile": PLATFORM_PROFILES[detected],
+            "all_supported_platforms": PLATFORM_PROFILES,
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
 def create_debate(
     debate_id: str,
     topic: str,
     position_a: Optional[str] = None,
     position_b: Optional[str] = None,
+    client_platform: Optional[str] = None,
+    default_model: str = "inherit",
+    default_effort: str = "high",
     participants: Optional[list[dict[str, str]]] = None,
     max_rounds: int = 3,
     max_words: int = 200,
     strict_turn_order: bool = True,
     rules: str = "Be concise, address the previous turn directly, and provide technical evidence.",
 ) -> str:
-    """Create a new debate or N-participant roundtable session with a topic, positions/participants, and rules."""
+    """Create a new debate or N-participant roundtable session with a topic, positions/participants, model selection, effort level, and rules."""
     debates = _load_debates()
-    norm_participants = _normalize_participants(position_a, position_b, participants)
+    detected_platform = _detect_client_platform(client_platform)
+    norm_participants = _normalize_participants(
+        position_a,
+        position_b,
+        participants,
+        detected_platform,
+        default_model,
+        default_effort,
+    )
 
     debates[debate_id] = {
         "debate_id": debate_id,
         "topic": topic,
+        "client_platform": detected_platform,
+        "default_model": default_model,
+        "default_effort": default_effort.strip().lower(),
         "position_a": norm_participants[0]["role"],
         "position_b": norm_participants[1]["role"] if len(norm_participants) > 1 else "Position B",
         "participants": norm_participants,
@@ -221,18 +414,28 @@ def create_debate(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "next_expected_position": norm_participants[0]["id"],
         "turns": [],
-        "scoreboard": _compute_scoreboard({"participants": norm_participants, "turns": []}),
+        "scoreboard": _compute_scoreboard(
+            {
+                "client_platform": detected_platform,
+                "default_model": default_model,
+                "default_effort": default_effort,
+                "participants": norm_participants,
+                "turns": [],
+            }
+        ),
         "verdict": None,
         "winner": None,
     }
     _save_debates(debates)
 
     participant_summary = "\n".join(
-        f"Position {p['id']}: {p['role']}" for p in norm_participants
+        f"Position {p['id']} [Platform: {p['platform']}, Model: {p['model']}, Effort: {p['effort']}]: {p['role']}"
+        for p in norm_participants
     )
     return (
         f"Debate '{debate_id}' created.\n"
         f"Topic: {topic}\n"
+        f"Detected Platform: {detected_platform}\n"
         f"{participant_summary}\n"
         f"Max rounds: {max_rounds} ({max_rounds * len(norm_participants)} total turns)\n"
         f"Word limit per turn: {max_words}\n"
@@ -258,6 +461,9 @@ def list_debates(status: str = "all") -> str:
                 "debate_id": d_id,
                 "topic": info.get("topic"),
                 "status": info.get("status"),
+                "client_platform": info.get("client_platform", "antigravity"),
+                "default_model": info.get("default_model", "inherit"),
+                "default_effort": info.get("default_effort", "high"),
                 "turns_count": len(info.get("turns", [])),
                 "max_turns": info.get("max_rounds", 3) * num_participants,
                 "next_expected_position": info.get("next_expected_position"),
@@ -269,7 +475,7 @@ def list_debates(status: str = "all") -> str:
 
 @mcp.tool()
 def read_debate(debate_id: str) -> str:
-    """Read the full state, scoreboard, and transcript of a debate, including whose turn is next."""
+    """Read the full state, model/effort profile, scoreboard, and transcript of a debate, including whose turn is next."""
     debates = _load_debates()
     if debate_id not in debates:
         available = list(debates.keys())
@@ -283,6 +489,8 @@ def post_argument(
     agent_name: str,
     position: str,
     argument: str,
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
     force: bool = False,
 ) -> str:
     """Post an argument or rebuttal to an open debate. Enforces turn order unless force=True."""
@@ -318,6 +526,16 @@ def post_argument(
 
     valid_ids = [p["id"].upper() for p in participants]
     normalized_pos = requested_pos if requested_pos in valid_ids else expected_pos
+    participant_cfg = next(
+        (p for p in participants if p["id"].upper() == normalized_pos), {}
+    )
+
+    resolved_model = (
+        model or participant_cfg.get("model") or debate.get("default_model") or "inherit"
+    )
+    resolved_effort = (
+        effort or participant_cfg.get("effort") or debate.get("default_effort") or "high"
+    ).lower()
 
     word_count = len(argument.strip().split())
     max_words = debate.get("max_words", 200)
@@ -336,6 +554,8 @@ def post_argument(
             "round": current_round,
             "agent": agent_name,
             "position": normalized_pos,
+            "model": resolved_model,
+            "effort": resolved_effort,
             "word_count": word_count,
             "argument": argument,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -350,7 +570,7 @@ def post_argument(
     remaining = max_turns - turn_number
     return (
         f"Turn {turn_number} (Round {current_round}) recorded by {agent_name} "
-        f"[Position {normalized_pos}, {word_count} words]. "
+        f"[Position {normalized_pos}, Model: {resolved_model}, Effort: {resolved_effort}, {word_count} words]. "
         f"Remaining turns: {remaining}. Next expected position: {debate['next_expected_position']}.{word_warning}"
     )
 
@@ -403,11 +623,25 @@ def wait_for_turn(
             )
 
         if str(debate.get("next_expected_position", "")).upper() == target_pos:
+            my_profile = next(
+                (p for p in participants if str(p.get("id")).upper() == target_pos), {}
+            )
             return json.dumps(
                 {
                     "event": "your_turn",
                     "debate_id": debate_id,
                     "your_position": target_pos,
+                    "assigned_model": my_profile.get("model")
+                    or debate.get("default_model")
+                    or "inherit",
+                    "assigned_effort": my_profile.get("effort")
+                    or debate.get("default_effort")
+                    or "high",
+                    "effort_directive": my_profile.get("effort_directive")
+                    or _get_effort_directive(
+                        debate.get("client_platform", "antigravity"),
+                        my_profile.get("effort") or debate.get("default_effort") or "high",
+                    ),
                     "turns_completed": len(turns),
                     "max_turns": max_turns,
                     "last_turn": turns[-1] if turns else None,
@@ -449,7 +683,9 @@ def score_turn(
         return f"Debate '{debate_id}' not found."
 
     debate = debates[debate_id]
-    target_turn = next((t for t in debate.get("turns", []) if t.get("turn") == turn_number), None)
+    target_turn = next(
+        (t for t in debate.get("turns", []) if t.get("turn") == turn_number), None
+    )
     if not target_turn:
         return f"Turn {turn_number} not found in debate '{debate_id}'."
 
@@ -541,30 +777,52 @@ def moderate_debate(
     topic: str = "",
     position_a: str = "",
     position_b: str = "",
+    model: str = "",
+    effort: str = "",
     rounds: int = 3,
 ) -> str:
-    """Prompt template to start, moderate, or participate in a structured multi-agent debate."""
+    """Prompt template to start, moderate, or participate in a structured multi-agent debate with platform-specific model and effort selection."""
+    detected_platform = _detect_client_platform()
+    profile = PLATFORM_PROFILES.get(detected_platform, PLATFORM_PROFILES["antigravity"])
     has_topic = bool(topic and topic.strip() and topic.strip() != "undefined")
+
+    model_options_list = ", ".join(
+        f"'{m['id']}' ({m['label']})" for m in profile["models"]
+    )
+    effort_options_list = ", ".join(
+        f"'{e['id']}' ({e['label']})" for e in profile["efforts"]
+    )
+
     if not has_topic:
         return (
-            "I want to start a structured debate using the `roundtable-mcp` server.\n\n"
-            "Since I have not specified the topic or positions yet:\n"
-            "1. First call `list_debates` on `roundtable-mcp` to check if there is already an open debate to join.\n"
-            "2. Ask me what topic and positions (or multiple roundtable roles) I want to debate, and whether I want to run it automatically here with subagents or across different AI clients using `wait_for_turn`.\n"
-            "3. Once I confirm, create the debate with `create_debate`, run the rounds, score the turns with `score_turn`, close with `close_debate`, and offer to export an ADR using `export_debate`."
+            f"I want to start a structured debate using the `roundtable-mcp` server.\n"
+            f"Detected client platform: **{profile['display_name']}** (`{detected_platform}`).\n\n"
+            f"Since I have not specified the parameters yet:\n"
+            f"1. Call `list_debates` on `roundtable-mcp` to check if there is already an open debate to join.\n"
+            f"2. Ask me (using your interactive question tool if available):\n"
+            f"   - **Topic and Positions** (or multiple roundtable roles).\n"
+            f"   - **Model for {profile['display_name']}**: {model_options_list}.\n"
+            f"   - **Reasoning Effort**: {effort_options_list}.\n"
+            f"   - **Execution Mode**: Automated subagents in this session vs. Cross-client debate using `wait_for_turn`.\n"
+            f"3. Once I confirm, call `create_debate` passing `client_platform=\"{detected_platform}\"`, `default_model`, and `default_effort`. When spawning subagents, pass the selected `Model` parameter directly to your subagent tool and include the participant's `effort_directive` in its prompt."
         )
 
+    resolved_model = model if model and model != "undefined" else "inherit"
+    resolved_effort = effort if effort and effort != "undefined" else "high"
     return (
-        f"Start a structured debate using the roundtable-mcp tools.\n"
+        f"Start a structured debate using the roundtable-mcp tools on {profile['display_name']}.\n"
         f"Topic: {topic}\n"
         f"Position A: {position_a or 'Pro / Option A'}\n"
         f"Position B: {position_b or 'Con / Option B'}\n"
+        f"Platform: {detected_platform}\n"
+        f"Model: {resolved_model}\n"
+        f"Effort: {resolved_effort}\n"
         f"Rounds: {rounds}\n\n"
         f"Instructions:\n"
-        f"1. Call create_debate with a descriptive debate_id.\n"
-        f"2. Alternate turns between positions using post_argument (or spawn subagents to represent each position).\n"
+        f"1. Call create_debate with client_platform=\"{detected_platform}\", default_model=\"{resolved_model}\", and default_effort=\"{resolved_effort}\".\n"
+        f"2. Spawn subagents using the configured model ({resolved_model}) and inject the effort directive ({resolved_effort}) into their prompts.\n"
         f"3. Score each turn objectively using score_turn.\n"
-        f"4. After {rounds} rounds, call close_debate with a final verdict and export the result as an ADR using export_debate."
+        f"4. After {rounds} rounds, call close_debate with a final verdict and offer to export the ADR via export_debate."
     )
 
 

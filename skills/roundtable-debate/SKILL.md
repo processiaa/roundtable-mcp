@@ -1,25 +1,40 @@
 ---
 name: roundtable-debate
-description: Coordinate structured multi-agent debates and N-participant roundtables across AI clients (Antigravity, Claude, ChatGPT, Cursor) using the roundtable-mcp tools.
+description: Coordinate structured multi-agent debates and N-participant roundtables across Antigravity and Claude with platform-specific model and effort selection using the roundtable-mcp tools.
 ---
 
 # Roundtable Debate Skill
 
 Use this skill when the user wants two or more AI agents to debate a technical, architectural, or strategic topic.
 
+## Platform-Specific Models and Effort
+
+Call `get_client_models` (or inspect the current environment) to offer the exact models supported by the active client:
+
+### 1. Google Antigravity (`client_platform: "antigravity"`)
+- **Models (`invoke_subagent` `Model` parameter):**
+  - `inherit` (Default - current session model)
+  - `pro` (Deep architectural reasoning)
+  - `flash` (Balanced speed and capability)
+  - `flash_lite` (Fast, lightweight)
+- **Reasoning Effort (`effort`):** `high`, `medium`, `low`
+
+### 2. Anthropic Claude (`client_platform: "claude"`)
+- **Models (`Task` subagent `model` parameter):**
+  - `inherit` (Default - current session model)
+  - `opus` (Deep complex reasoning)
+  - `sonnet` (Balanced speed and quality)
+  - `haiku` (Fast and lightweight)
+- **Reasoning Effort (`effort`):** `high` (`ultrathink`), `medium` (`think`), `low`
+
 ## Available Workflows
 
 ### 1. Single-Client Multi-Agent Debate or Roundtable (Subagents)
-When the user wants a full debate executed automatically inside the current session:
-1. Call `create_debate` with `debate_id`, `topic`, `max_rounds`, `max_words`, and either `position_a`/`position_b` (for 2-way debates) or `participants` (for 3+ role roundtables).
-2. Launch subagents for each position (or alternate roles if subagents are unavailable).
-3. For each round:
-   - Each participant posts its argument in turn order via `post_argument` (strict turn order is enforced automatically).
-   - Score each turn objectively using `score_turn` (`technical_evidence`, `rebuttal_strength`, `operational_viability`, `clarity`).
-4. Once all rounds complete, review `read_debate` (including the `scoreboard`), call `close_debate` with the final synthesis, and offer to export an Architecture Decision Record (`ADR`) via `export_debate`.
+1. Ask the user for the topic, positions/roles, platform model, and effort level.
+2. Call `create_debate` with `debate_id`, `topic`, `client_platform`, `default_model`, `default_effort`, and `participants`.
+3. Launch subagents passing the participant's `model` directly to the subagent tool (`invoke_subagent` in Antigravity or `Task` in Claude) and include `effort_directive` in each subagent's prompt.
+4. Score each turn via `score_turn`, close via `close_debate`, and export the ADR via `export_debate`.
 
-### 2. Automated Cross-Client Debate (Antigravity vs. Claude vs. ChatGPT)
-When the user runs multiple AI clients connected to the same `roundtable-mcp` server:
-1. For each round, call `wait_for_turn` with your assigned `position` (e.g., `"A"` or `"B"`).
-2. As soon as `wait_for_turn` returns `"event": "your_turn"`, formulate a rebuttal to `last_turn` and call `post_argument`.
-3. Repeat until `wait_for_turn` returns `"max_turns_reached"` or `"debate_closed"`.
+### 2. Automated Cross-Client Debate (Antigravity vs. Claude)
+1. Call `wait_for_turn` with your assigned `position`.
+2. When `wait_for_turn` returns `"event": "your_turn"`, follow the returned `effort_directive` and call `post_argument` passing the `model` and `effort` used.

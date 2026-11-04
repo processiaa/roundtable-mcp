@@ -16,6 +16,108 @@ const STORAGE_FILE =
   process.env.ROUNDTABLE_STORAGE_PATH ||
   path.join(DEFAULT_STORAGE_DIR, "debates.json");
 
+const PLATFORM_PROFILES = {
+  antigravity: {
+    platform: "antigravity",
+    display_name: "Google Antigravity",
+    models: [
+      { id: "inherit", label: "Inherit (Usar el modelo actual de la sesion)" },
+      { id: "pro", label: "Pro (Maximo razonamiento arquitectonico)" },
+      { id: "flash", label: "Flash (Balance entre velocidad y capacidad)" },
+      { id: "flash_lite", label: "Flash Lite (Ultraligero y rapido)" },
+    ],
+    efforts: [
+      {
+        id: "high",
+        label: "High (Analisis exhaustivo, casos borde y evidencia profunda)",
+        directive:
+          "EFFORT=HIGH: Perform deep step-by-step technical analysis, evaluate production edge cases, failure modes, and concrete architectural trade-offs before formulating your argument.",
+      },
+      {
+        id: "medium",
+        label: "Medium (Balanceado, directo al punto con soporte tecnico)",
+        directive:
+          "EFFORT=MEDIUM: Provide a balanced, well-structured technical argument directly addressing the opponent's points.",
+      },
+      {
+        id: "low",
+        label: "Low ( Sintetico y rapido, enfocado en ideas clave)",
+        directive:
+          "EFFORT=LOW: Be brief and direct, focusing only on the top 2 core arguments without extended deliberation.",
+      },
+    ],
+  },
+  claude: {
+    platform: "claude",
+    display_name: "Anthropic Claude",
+    models: [
+      { id: "inherit", label: "Inherit (Usar el modelo actual de la sesion)" },
+      { id: "opus", label: "Claude Opus (Maximo razonamiento complejo)" },
+      { id: "sonnet", label: "Claude Sonnet (Balance ideal velocidad/calidad)" },
+      { id: "haiku", label: "Claude Haiku (Rapido y ligero)" },
+    ],
+    efforts: [
+      {
+        id: "high",
+        label: "High (Ultrathink - Razonamiento extendido al maximo)",
+        directive:
+          "EFFORT=HIGH (ultrathink): Engage maximum extended thinking, stress-test every assumption, evaluate production failure modes, and build an airtight technical rebuttal.",
+      },
+      {
+        id: "medium",
+        label: "Medium (Think - Razonamiento estandar estructurado)",
+        directive:
+          "EFFORT=MEDIUM (think): Think carefully through the opponent's points and provide a rigorous, structured counter-argument.",
+      },
+      {
+        id: "low",
+        label: "Low (Respuesta directa sin pensamiento extendido)",
+        directive:
+          "EFFORT=LOW: Respond concisely and directly with the primary technical arguments.",
+      },
+    ],
+  },
+};
+
+function detectClientPlatform(mcpServer, explicitPlatform) {
+  if (explicitPlatform) {
+    const clean = String(explicitPlatform).trim().toLowerCase();
+    if (clean.includes("claude")) return "claude";
+    if (clean.includes("antigravity") || clean.includes("agy") || clean.includes("gemini")) {
+      return "antigravity";
+    }
+  }
+  try {
+    const clientInfo = mcpServer?.getClientVersion?.();
+    const clientName = String(clientInfo?.name || "").toLowerCase();
+    if (clientName.includes("claude")) return "claude";
+    if (
+      clientName.includes("antigravity") ||
+      clientName.includes("agy") ||
+      clientName.includes("gemini")
+    ) {
+      return "antigravity";
+    }
+  } catch {
+    // ignore
+  }
+  if (process.env.CLAUDECODE || process.env.CLAUDE_ENTRYPOINT || process.env.CLAUDE_CONFIG_DIR) {
+    return "claude";
+  }
+  if (process.env.ANTIGRAVITY_CLI_ALIAS || process.env.AGY_ACCOUNT) {
+    return "antigravity";
+  }
+  return "antigravity";
+}
+
+function getEffortDirective(platform, effortId) {
+  const profile = PLATFORM_PROFILES[platform] || PLATFORM_PROFILES.antigravity;
+  const found = profile.efforts.find(
+    (e) => e.id === String(effortId || "high").toLowerCase()
+  );
+  return found ? found.directive : profile.efforts[0].directive;
+}
+
 function loadDebates() {
   if (!fs.existsSync(STORAGE_FILE)) {
     return {};
@@ -36,22 +138,59 @@ function saveDebates(data) {
   fs.renameSync(tempFile, STORAGE_FILE);
 }
 
-function normalizeParticipants(positionA, positionB, participantsInput) {
+function normalizeParticipants(
+  positionA,
+  positionB,
+  participantsInput,
+  defaultPlatform = "antigravity",
+  defaultModel = "inherit",
+  defaultEffort = "high"
+) {
   if (Array.isArray(participantsInput) && participantsInput.length >= 2) {
     return participantsInput.map((item, idx) => {
       const defaultId = String.fromCharCode(65 + idx);
       if (typeof item === "string") {
-        return { id: defaultId, role: item };
+        return {
+          id: defaultId,
+          role: item,
+          platform: defaultPlatform,
+          model: defaultModel,
+          effort: defaultEffort,
+          effort_directive: getEffortDirective(defaultPlatform, defaultEffort),
+        };
       }
+      const pPlatform = item.platform || defaultPlatform;
+      const pModel = item.model || defaultModel;
+      const pEffort = String(item.effort || defaultEffort).toLowerCase();
       return {
         id: String(item.id || defaultId).trim().toUpperCase(),
         role: String(item.role || item.position || `Position ${defaultId}`),
+        platform: pPlatform,
+        model: pModel,
+        effort: pEffort,
+        effort_directive: getEffortDirective(pPlatform, pEffort),
       };
     });
   }
+  const effortNorm = String(defaultEffort || "high").toLowerCase();
+  const directive = getEffortDirective(defaultPlatform, effortNorm);
   return [
-    { id: "A", role: positionA || "Position A" },
-    { id: "B", role: positionB || "Position B" },
+    {
+      id: "A",
+      role: positionA || "Position A",
+      platform: defaultPlatform,
+      model: defaultModel,
+      effort: effortNorm,
+      effort_directive: directive,
+    },
+    {
+      id: "B",
+      role: positionB || "Position B",
+      platform: defaultPlatform,
+      model: defaultModel,
+      effort: effortNorm,
+      effort_directive: directive,
+    },
   ];
 }
 
@@ -64,6 +203,9 @@ function computeScoreboard(debate) {
   for (const p of participants) {
     board[p.id] = {
       role: p.role,
+      platform: p.platform || debate.client_platform || "antigravity",
+      model: p.model || debate.default_model || "inherit",
+      effort: p.effort || debate.default_effort || "high",
       scored_turns: 0,
       total_points: 0,
       average_score: 0,
@@ -75,6 +217,9 @@ function computeScoreboard(debate) {
       if (!board[pos]) {
         board[pos] = {
           role: pos,
+          platform: debate.client_platform || "antigravity",
+          model: turn.model || "inherit",
+          effort: turn.effort || "high",
           scored_turns: 0,
           total_points: 0,
           average_score: 0,
@@ -103,7 +248,17 @@ function formatDebateMarkdown(debate, format = "adr") {
     lines.push(`# ADR: ${debate.topic}`);
     lines.push("");
     lines.push(`- **Debate ID:** \`${debate.debate_id}\``);
-    lines.push(`- **Status:** ${debate.status === "closed" ? "Accepted / Closed" : "Proposed / Open"}`);
+    lines.push(
+      `- **Status:** ${
+        debate.status === "closed" ? "Accepted / Closed" : "Proposed / Open"
+      }`
+    );
+    lines.push(`- **Platform:** ${debate.client_platform || "antigravity"}`);
+    lines.push(
+      `- **Default Model / Effort:** \`${debate.default_model || "inherit"}\` / \`${
+        debate.default_effort || "high"
+      }\``
+    );
     lines.push(`- **Created At:** ${debate.created_at}`);
     if (debate.closed_at) {
       lines.push(`- **Decided At:** ${debate.closed_at}`);
@@ -116,19 +271,27 @@ function formatDebateMarkdown(debate, format = "adr") {
     lines.push("");
     lines.push(`Topic evaluated: **${debate.topic}**`);
     lines.push("");
-    lines.push(`Rules applied: ${debate.rules || "Standard technical debate rules."}`);
+    lines.push(
+      `Rules applied: ${debate.rules || "Standard technical debate rules."}`
+    );
     lines.push("");
-    lines.push("## 2. Considered Options (Positions)");
+    lines.push("## 2. Considered Options (Positions and Model Profiles)");
     lines.push("");
     for (const p of participants) {
-      lines.push(`- **Position ${p.id}:** ${p.role}`);
+      lines.push(
+        `- **Position ${p.id}** [Platform: \`${p.platform || "antigravity"}\`, Model: \`${
+          p.model || "inherit"
+        }\`, Effort: \`${p.effort || "high"}\`]: ${p.role}`
+      );
     }
     lines.push("");
     lines.push("## 3. Deliberation and Key Arguments");
     lines.push("");
     for (const turn of debate.turns || []) {
+      const modelTag = turn.model ? ` | Model: ${turn.model}` : "";
+      const effortTag = turn.effort ? ` | Effort: ${turn.effort}` : "";
       lines.push(
-        `### Round ${turn.round} - Turn ${turn.turn}: ${turn.agent} (Position ${turn.position})`
+        `### Round ${turn.round} - Turn ${turn.turn}: ${turn.agent} (Position ${turn.position}${modelTag}${effortTag})`
       );
       lines.push("");
       lines.push(turn.argument);
@@ -148,11 +311,17 @@ function formatDebateMarkdown(debate, format = "adr") {
     if (debate.scoreboard) {
       lines.push("## 4. Evaluation Scoreboard");
       lines.push("");
-      lines.push("| Position | Role | Scored Turns | Total Points | Average Score (1-10) |");
-      lines.push("| :--- | :--- | :---: | :---: | :---: |");
+      lines.push(
+        "| Position | Role | Model | Effort | Scored Turns | Total Points | Average Score (1-10) |"
+      );
+      lines.push("| :--- | :--- | :---: | :---: | :---: | :---: | :---: |");
       for (const [posId, stats] of Object.entries(debate.scoreboard)) {
         lines.push(
-          `| ${posId} | ${stats.role} | ${stats.scored_turns} | ${stats.total_points} | ${stats.average_score} |`
+          `| ${posId} | ${stats.role} | ${stats.model || "inherit"} | ${
+            stats.effort || "high"
+          } | ${stats.scored_turns} | ${stats.total_points} | ${
+            stats.average_score
+          } |`
         );
       }
       lines.push("");
@@ -161,7 +330,9 @@ function formatDebateMarkdown(debate, format = "adr") {
     lines.push("");
     lines.push(`**Outcome:** ${debate.winner || "Pending"}`);
     lines.push("");
-    lines.push(debate.verdict || "Debate is still open; no final verdict recorded yet.");
+    lines.push(
+      debate.verdict || "Debate is still open; no final verdict recorded yet."
+    );
     lines.push("");
   } else {
     lines.push(`# Debate Transcript: ${debate.topic}`);
@@ -173,14 +344,20 @@ function formatDebateMarkdown(debate, format = "adr") {
     lines.push("## Positions");
     lines.push("");
     for (const p of participants) {
-      lines.push(`- **${p.id}:** ${p.role}`);
+      lines.push(
+        `- **${p.id}** (Model: \`${p.model || "inherit"}\`, Effort: \`${
+          p.effort || "high"
+        }\`): ${p.role}`
+      );
     }
     lines.push("");
     lines.push("## Turns");
     lines.push("");
     for (const turn of debate.turns || []) {
+      const modelTag = turn.model ? ` | Model: ${turn.model}` : "";
+      const effortTag = turn.effort ? ` | Effort: ${turn.effort}` : "";
       lines.push(
-        `### [Round ${turn.round} | Turn ${turn.turn}] ${turn.agent} (Position ${turn.position})`
+        `### [Round ${turn.round} | Turn ${turn.turn}] ${turn.agent} (Position ${turn.position}${modelTag}${effortTag})`
       );
       lines.push("");
       lines.push(turn.argument);
@@ -206,7 +383,7 @@ function sleep(ms) {
 const server = new Server(
   {
     name: "roundtable-mcp",
-    version: "0.2.0",
+    version: "0.3.0",
   },
   {
     capabilities: {
@@ -220,9 +397,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
+        name: "get_client_models",
+        description:
+          "Return the available models and effort levels for Antigravity ('inherit', 'pro', 'flash', 'flash_lite') or Claude ('inherit', 'opus', 'sonnet', 'haiku').",
+        inputSchema: {
+          type: "object",
+          properties: {
+            platform: {
+              type: "string",
+              description: "Optional platform override: 'antigravity' or 'claude'",
+            },
+          },
+        },
+      },
+      {
         name: "create_debate",
         description:
-          "Create a new debate or N-participant roundtable session with a topic, positions/participants, and rules.",
+          "Create a new debate or N-participant roundtable session with a topic, positions/participants, model selection, effort level, and rules.",
         inputSchema: {
           type: "object",
           properties: {
@@ -236,21 +427,42 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             position_a: {
               type: "string",
-              description: "Description of Position A (optional if participants is provided)",
+              description:
+                "Description of Position A (optional if participants is provided)",
             },
             position_b: {
               type: "string",
-              description: "Description of Position B (optional if participants is provided)",
+              description:
+                "Description of Position B (optional if participants is provided)",
+            },
+            client_platform: {
+              type: "string",
+              description:
+                "Target platform ('antigravity' or 'claude'). Auto-detected if omitted.",
+            },
+            default_model: {
+              type: "string",
+              description:
+                "Default model for participants. Antigravity: 'inherit', 'pro', 'flash', 'flash_lite'. Claude: 'inherit', 'opus', 'sonnet', 'haiku'.",
+              default: "inherit",
+            },
+            default_effort: {
+              type: "string",
+              description: "Default reasoning effort: 'low', 'medium', or 'high'.",
+              default: "high",
             },
             participants: {
               type: "array",
               description:
-                "Optional list of 2 or more participants for multi-role roundtables (e.g. [{'id': 'A', 'role': 'Cloud Architect'}, {'id': 'B', 'role': 'Security Engineer'}, {'id': 'C', 'role': 'FinOps'}])",
+                "Optional list of 2 or more participants with custom model/effort per role (e.g. [{'id': 'A', 'role': 'Cloud Architect', 'model': 'pro', 'effort': 'high'}, {'id': 'B', 'role': 'FinOps', 'model': 'flash', 'effort': 'medium'}])",
               items: {
                 type: "object",
                 properties: {
                   id: { type: "string" },
                   role: { type: "string" },
+                  platform: { type: "string" },
+                  model: { type: "string" },
+                  effort: { type: "string" },
                 },
               },
             },
@@ -297,7 +509,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "read_debate",
         description:
-          "Read the full state, scoreboard, and transcript of a debate, including whose turn is next.",
+          "Read the full state, model/effort profile, scoreboard, and transcript of a debate, including whose turn is next.",
         inputSchema: {
           type: "object",
           properties: {
@@ -331,6 +543,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             argument: {
               type: "string",
               description: "The argument or rebuttal content",
+            },
+            model: {
+              type: "string",
+              description:
+                "Model used for this turn (defaults to participant's configured model)",
+            },
+            effort: {
+              type: "string",
+              description:
+                "Reasoning effort used ('low', 'medium', 'high'; defaults to participant's configured effort)",
             },
             force: {
               type: "boolean",
@@ -434,7 +656,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             output_path: {
               type: "string",
-              description: "Optional absolute or relative path to save the exported .md file",
+              description:
+                "Optional absolute or relative path to save the exported .md file",
             },
           },
           required: ["debate_id"],
@@ -485,6 +708,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
 
+  if (name === "get_client_models") {
+    const detected = detectClientPlatform(server, args.platform);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              detected_platform: detected,
+              active_profile: PLATFORM_PROFILES[detected],
+              all_supported_platforms: PLATFORM_PROFILES,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+
   if (name === "create_debate") {
     const debates = loadDebates();
     const {
@@ -492,6 +735,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       topic,
       position_a,
       position_b,
+      client_platform,
+      default_model = "inherit",
+      default_effort = "high",
       participants: rawParticipants,
       max_rounds = 3,
       max_words = 200,
@@ -499,15 +745,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       rules = "Be concise, address the previous turn directly, and provide technical evidence.",
     } = args;
 
+    const detectedPlatform = detectClientPlatform(server, client_platform);
     const participants = normalizeParticipants(
       position_a,
       position_b,
-      rawParticipants
+      rawParticipants,
+      detectedPlatform,
+      default_model,
+      default_effort
     );
 
     debates[debate_id] = {
       debate_id,
       topic,
+      client_platform: detectedPlatform,
+      default_model,
+      default_effort: String(default_effort || "high").toLowerCase(),
       position_a: participants[0]?.role || position_a || "Position A",
       position_b: participants[1]?.role || position_b || "Position B",
       participants,
@@ -519,14 +772,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       created_at: new Date().toISOString(),
       next_expected_position: participants[0].id,
       turns: [],
-      scoreboard: computeScoreboard({ participants, turns: [] }),
+      scoreboard: computeScoreboard({
+        client_platform: detectedPlatform,
+        default_model,
+        default_effort,
+        participants,
+        turns: [],
+      }),
       verdict: null,
       winner: null,
     };
     saveDebates(debates);
 
     const participantSummary = participants
-      .map((p) => `Position ${p.id}: ${p.role}`)
+      .map(
+        (p) =>
+          `Position ${p.id} [Platform: ${p.platform}, Model: ${p.model}, Effort: ${p.effort}]: ${p.role}`
+      )
       .join("\n");
 
     return {
@@ -536,6 +798,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           text:
             `Debate '${debate_id}' created.\n` +
             `Topic: ${topic}\n` +
+            `Detected Platform: ${detectedPlatform}\n` +
             `${participantSummary}\n` +
             `Max rounds: ${max_rounds} (${max_rounds * participants.length} total turns)\n` +
             `Word limit per turn: ${max_words}\n` +
@@ -561,6 +824,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         debate_id: dId,
         topic: info.topic,
         status: info.status,
+        client_platform: info.client_platform || "antigravity",
+        default_model: info.default_model || "inherit",
+        default_effort: info.default_effort || "high",
         turns_count: (info.turns || []).length,
         max_turns: (info.max_rounds || 3) * numParticipants,
         next_expected_position: info.next_expected_position,
@@ -601,6 +867,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       agent_name,
       position,
       argument,
+      model: turnModel,
+      effort: turnEffort,
       force = false,
     } = args;
 
@@ -643,7 +911,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       .trim()
       .toUpperCase();
 
-    if (debate.strict_turn_order !== false && !force && requestedPos !== expectedPos) {
+    if (
+      debate.strict_turn_order !== false &&
+      !force &&
+      requestedPos !== expectedPos
+    ) {
       return {
         content: [
           {
@@ -661,6 +933,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const normalizedPos = validIds.includes(requestedPos)
       ? requestedPos
       : expectedPos;
+    const participantConfig =
+      participants.find((p) => p.id.toUpperCase() === normalizedPos) || {};
+
+    const resolvedModel =
+      turnModel || participantConfig.model || debate.default_model || "inherit";
+    const resolvedEffort = String(
+      turnEffort || participantConfig.effort || debate.default_effort || "high"
+    ).toLowerCase();
 
     const wordCount = String(argument || "")
       .trim()
@@ -680,6 +960,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       round: currentRound,
       agent: agent_name,
       position: normalizedPos,
+      model: resolvedModel,
+      effort: resolvedEffort,
       word_count: wordCount,
       argument,
       timestamp: new Date().toISOString(),
@@ -697,7 +979,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         {
           type: "text",
           text:
-            `Turn ${turnNumber} (Round ${currentRound}) recorded by ${agent_name} [Position ${normalizedPos}, ${wordCount} words]. ` +
+            `Turn ${turnNumber} (Round ${currentRound}) recorded by ${agent_name} ` +
+            `[Position ${normalizedPos}, Model: ${resolvedModel}, Effort: ${resolvedEffort}, ${wordCount} words]. ` +
             `Remaining turns: ${remaining}. Next expected position: ${debate.next_expected_position}.${wordWarning}`,
         },
       ],
@@ -705,15 +988,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "wait_for_turn") {
-    const {
-      debate_id,
-      position,
-      timeout_seconds = 90,
-    } = args;
+    const { debate_id, position, timeout_seconds = 90 } = args;
     const targetPos = String(position || "")
       .trim()
       .toUpperCase();
-    const deadline = Date.now() + Math.min(Math.max(timeout_seconds, 5), 300) * 1000;
+    const deadline =
+      Date.now() + Math.min(Math.max(timeout_seconds, 5), 300) * 1000;
 
     while (Date.now() < deadline) {
       const debates = loadDebates();
@@ -771,6 +1051,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       if (String(debate.next_expected_position).toUpperCase() === targetPos) {
+        const myProfile =
+          participants.find((p) => String(p.id).toUpperCase() === targetPos) ||
+          {};
         return {
           content: [
             {
@@ -780,6 +1063,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   event: "your_turn",
                   debate_id,
                   your_position: targetPos,
+                  assigned_model:
+                    myProfile.model || debate.default_model || "inherit",
+                  assigned_effort:
+                    myProfile.effort || debate.default_effort || "high",
+                  effort_directive:
+                    myProfile.effort_directive ||
+                    getEffortDirective(
+                      debate.client_platform || "antigravity",
+                      myProfile.effort || debate.default_effort || "high"
+                    ),
                   turns_completed: turns.length,
                   max_turns: maxTurns,
                   last_turn: turns[turns.length - 1] || null,
@@ -962,11 +1255,22 @@ server.setRequestHandler(ListPromptsRequestSchema, async () => {
       {
         name: "moderate_debate",
         description:
-          "Prompt template to start, moderate, or participate in a structured multi-agent debate.",
+          "Prompt template to start, moderate, or participate in a structured multi-agent debate with platform-specific model and effort selection.",
         arguments: [
           { name: "topic", description: "Debate topic", required: false },
           { name: "position_a", description: "Position A", required: false },
           { name: "position_b", description: "Position B", required: false },
+          {
+            name: "model",
+            description:
+              "Model (Antigravity: inherit/pro/flash/flash_lite | Claude: inherit/opus/sonnet/haiku)",
+            required: false,
+          },
+          {
+            name: "effort",
+            description: "Reasoning effort (low, medium, high)",
+            required: false,
+          },
           { name: "rounds", description: "Number of rounds", required: false },
         ],
       },
@@ -979,11 +1283,21 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
   if (name !== "moderate_debate") {
     throw new Error(`Unknown prompt: ${name}`);
   }
+  const detectedPlatform = detectClientPlatform(server);
+  const profile =
+    PLATFORM_PROFILES[detectedPlatform] || PLATFORM_PROFILES.antigravity;
   const rounds = args.rounds || 3;
   const hasTopic =
     args.topic &&
     String(args.topic).trim() !== "" &&
     String(args.topic) !== "undefined";
+
+  const modelOptionsList = profile.models
+    .map((m) => `'${m.id}' (${m.label})`)
+    .join(", ");
+  const effortOptionsList = profile.efforts
+    .map((e) => `'${e.id}' (${e.label})`)
+    .join(", ");
 
   if (!hasTopic) {
     return {
@@ -993,11 +1307,16 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
           content: {
             type: "text",
             text:
-              "I want to start a structured debate using the `roundtable-mcp` server.\n\n" +
-              "Since I have not specified the topic or positions yet:\n" +
-              "1. First call `list_debates` on `roundtable-mcp` to check if there is already an open debate to join.\n" +
-              "2. Ask me what topic and positions (or multiple roundtable roles) I want to debate, and whether I want to run it automatically here with subagents or across different AI clients using `wait_for_turn`.\n" +
-              "3. Once I confirm, create the debate with `create_debate`, run the rounds, score the turns with `score_turn`, close with `close_debate`, and offer to export an ADR using `export_debate`.",
+              `I want to start a structured debate using the \`roundtable-mcp\` server.\n` +
+              `Detected client platform: **${profile.display_name}** (\`${detectedPlatform}\`).\n\n` +
+              `Since I have not specified the parameters yet:\n` +
+              `1. Call \`list_debates\` on \`roundtable-mcp\` to check if there is already an open debate to join.\n` +
+              `2. Ask me (using your interactive question tool if available):\n` +
+              `   - **Topic and Positions** (or multiple roundtable roles).\n` +
+              `   - **Model for ${profile.display_name}**: ${modelOptionsList}.\n` +
+              `   - **Reasoning Effort**: ${effortOptionsList}.\n` +
+              `   - **Execution Mode**: Automated subagents in this session vs. Cross-client debate using \`wait_for_turn\`.\n` +
+              `3. Once I confirm, call \`create_debate\` passing \`client_platform="${detectedPlatform}"\`, \`default_model\`, and \`default_effort\`. When spawning subagents, pass the selected \`Model\` parameter directly to your subagent tool and include the participant's \`effort_directive\` in its prompt.`,
           },
         },
       ],
@@ -1011,16 +1330,25 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
         content: {
           type: "text",
           text:
-            `Start a structured debate using the roundtable-mcp tools.\n` +
+            `Start a structured debate using the roundtable-mcp tools on ${profile.display_name}.\n` +
             `Topic: ${args.topic}\n` +
             `Position A: ${args.position_a || "Pro / Option A"}\n` +
             `Position B: ${args.position_b || "Con / Option B"}\n` +
+            `Platform: ${detectedPlatform}\n` +
+            `Model: ${args.model || "inherit"}\n` +
+            `Effort: ${args.effort || "high"}\n` +
             `Rounds: ${rounds}\n\n` +
             `Instructions:\n` +
-            `1. Call create_debate with a descriptive debate_id.\n` +
-            `2. Alternate turns between positions using post_argument (or spawn subagents to represent each position).\n` +
+            `1. Call create_debate with client_platform="${detectedPlatform}", default_model="${
+              args.model || "inherit"
+            }", and default_effort="${args.effort || "high"}".\n` +
+            `2. Spawn subagents using the configured model (${
+              args.model || "inherit"
+            }) and inject the effort directive (${
+              args.effort || "high"
+            }) into their prompts.\n` +
             `3. Score each turn objectively using score_turn.\n` +
-            `4. After ${rounds} rounds, call close_debate with a final verdict and export the result as an ADR using export_debate.`,
+            `4. After ${rounds} rounds, call close_debate with a final verdict and offer to export the ADR via export_debate.`,
         },
       },
     ],
