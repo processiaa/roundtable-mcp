@@ -23,3 +23,5 @@ venv/
 ENV/
 .env
 .roundtable_mcp/
+node_modules/
+package-lock.json

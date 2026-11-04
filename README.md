@@ -2,6 +2,8 @@
 
 Model Context Protocol (MCP) server for orchestrating structured multi-agent debates across different AI clients, including Google Antigravity, Claude Desktop, Claude Code, ChatGPT, and Cursor.
 
+Supports both **Node.js (`npx`)** and **Python (`uvx`)** out of the box from the same repository.
+
 Because all connected clients share the same persistent debate state (`~/.roundtable_mcp/debates.json`), you can either:
 1. **Pit different AI clients against each other** (for example, Antigravity defending Position A while Claude defends Position B).
 2. **Run automated multi-agent debates** inside a single client using subagents.
@@ -19,13 +21,53 @@ Because all connected clients share the same persistent debate state (`~/.roundt
 
 ---
 
-## Quick Installation (Direct from GitHub via `uvx`)
+## Quick Installation (Direct from GitHub)
 
-You do not need to clone this repository manually. Any MCP-compatible client can run it directly from GitHub using `uvx` (included with [uv](https://docs.astral.sh/uv/)).
+You do not need to clone this repository manually. Any MCP-compatible client can run it directly from GitHub using either **`npx`** (Node.js) or **`uvx`** (Python).
 
-### 1. Google Antigravity
+### Option A: Using `npx` (Node.js - Recommended)
 
-Add the following to `~/.gemini/config/mcp_config.json`:
+On Windows (`mcp_config.json` / `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "roundtable-mcp": {
+      "command": "npx.cmd",
+      "args": [
+        "-y",
+        "github:processiaa/roundtable-mcp"
+      ]
+    }
+  }
+}
+```
+
+On macOS / Linux:
+
+```json
+{
+  "mcpServers": {
+    "roundtable-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "github:processiaa/roundtable-mcp"
+      ]
+    }
+  }
+}
+```
+
+In **Claude Code (CLI)**:
+
+```bash
+claude mcp add roundtable-mcp -- npx -y github:processiaa/roundtable-mcp
+```
+
+---
+
+### Option B: Using `uvx` (Python)
 
 ```json
 {
@@ -42,36 +84,10 @@ Add the following to `~/.gemini/config/mcp_config.json`:
 }
 ```
 
-### 2. Claude Desktop
-
-Add the same block to your `claude_desktop_config.json` (`%APPDATA%\Claude\claude_desktop_config.json` on Windows or `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS).
-
-### 3. Claude Code (CLI)
-
-Run the following command in your terminal:
+In **Claude Code (CLI)**:
 
 ```bash
 claude mcp add roundtable-mcp -- uvx --from git+https://github.com/processiaa/roundtable-mcp.git roundtable-mcp
-```
-
-### 4. Cursor / VS Code
-
-Add an MCP server of type `command` (stdio) with:
-
-```text
-uvx --from git+https://github.com/processiaa/roundtable-mcp.git roundtable-mcp
-```
-
----
-
-## Local Development Installation
-
-If you clone the repository locally:
-
-```bash
-git clone https://github.com/processiaa/roundtable-mcp.git
-cd roundtable-mcp
-uv run roundtable-mcp
 ```
 
 ---
