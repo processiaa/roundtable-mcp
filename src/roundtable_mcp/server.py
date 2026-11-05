@@ -17,6 +17,7 @@ PLATFORM_PROFILES: dict[str, dict[str, Any]] = {
     "antigravity": {
         "platform": "antigravity",
         "display_name": "Google Antigravity",
+        "subagent_tool": "invoke_subagent (parameter Model: 'inherit' | 'pro' | 'flash' | 'flash_lite')",
         "models": [
             {"id": "inherit", "label": "Inherit (Usar el modelo actual de la sesion)"},
             {"id": "pro", "label": "Pro (Maximo razonamiento arquitectonico)"},
@@ -53,6 +54,7 @@ PLATFORM_PROFILES: dict[str, dict[str, Any]] = {
     "claude": {
         "platform": "claude",
         "display_name": "Anthropic Claude",
+        "subagent_tool": "Task / Agent tool (parameter model: 'opus' | 'sonnet' | 'haiku')",
         "models": [
             {"id": "inherit", "label": "Inherit (Usar el modelo actual de la sesion)"},
             {"id": "opus", "label": "Claude Opus (Maximo razonamiento complejo)"},
@@ -89,17 +91,23 @@ PLATFORM_PROFILES: dict[str, dict[str, Any]] = {
 def _detect_client_platform(explicit_platform: Optional[str] = None) -> str:
     if explicit_platform:
         clean = explicit_platform.strip().lower()
-        if "claude" in clean:
+        if "claude" in clean or "anthropic" in clean:
             return "claude"
         if "antigravity" in clean or "agy" in clean or "gemini" in clean:
             return "antigravity"
+    env_keys = " ".join(os.environ.keys()).upper()
     if (
         os.environ.get("CLAUDECODE")
         or os.environ.get("CLAUDE_ENTRYPOINT")
         or os.environ.get("CLAUDE_CONFIG_DIR")
+        or "CLAUDE" in env_keys
     ):
         return "claude"
-    if os.environ.get("ANTIGRAVITY_CLI_ALIAS") or os.environ.get("AGY_ACCOUNT"):
+    if (
+        os.environ.get("ANTIGRAVITY_CLI_ALIAS")
+        or os.environ.get("AGY_ACCOUNT")
+        or "ANTIGRAVITY" in env_keys
+    ):
         return "antigravity"
     return "antigravity"
 
@@ -246,6 +254,7 @@ def _format_debate_markdown(debate: dict, fmt: str = "adr") -> str:
         status_label = "Accepted / Closed" if debate.get("status") == "closed" else "Proposed / Open"
         lines.append(f"- **Status:** {status_label}")
         lines.append(f"- **Platform:** {debate.get('client_platform') or 'antigravity'}")
+        lines.append(f"- **Execution Mode:** `{debate.get('execution_mode') or 'subagents'}`")
         lines.append(
             f"- **Default Model / Effort:** `{debate.get('default_model') or 'inherit'}` / "
             f"`{debate.get('default_effort') or 'high'}`"
@@ -322,6 +331,7 @@ def _format_debate_markdown(debate: dict, fmt: str = "adr") -> str:
         lines.append("")
         lines.append(f"- **ID:** `{debate.get('debate_id')}`")
         lines.append(f"- **Status:** {debate.get('status')}")
+        lines.append(f"- **Execution Mode:** {debate.get('execution_mode') or 'subagents'}")
         lines.append(f"- **Rounds:** {debate.get('max_rounds')}")
         lines.append("")
         lines.append("## Positions")
@@ -374,20 +384,26 @@ def get_client_models(platform: Optional[str] = None) -> str:
 def create_debate(
     debate_id: str,
     topic: str,
+    client_platform: str,
+    execution_mode: str,
+    default_model: str,
+    default_effort: str,
     position_a: Optional[str] = None,
     position_b: Optional[str] = None,
-    client_platform: Optional[str] = None,
-    default_model: str = "inherit",
-    default_effort: str = "high",
     participants: Optional[list[dict[str, str]]] = None,
     max_rounds: int = 3,
     max_words: int = 200,
     strict_turn_order: bool = True,
     rules: str = "Be concise, address the previous turn directly, and provide technical evidence.",
 ) -> str:
-    """Create a new debate or N-participant roundtable session with a topic, positions/participants, model selection, effort level, and rules."""
+    """Create a new debate or N-participant roundtable session.
+    MANDATORY PRE-CHECK: Before calling create_debate, if the user did NOT explicitly specify
+    (1) execution_mode ('subagents', 'cross_client', or 'single_agent'),
+    (2) default_model (Claude: 'inherit', 'opus', 'sonnet', 'haiku' | Antigravity: 'inherit', 'pro', 'flash', 'flash_lite'), and
+    (3) default_effort ('high', 'medium', 'low'), you MUST ask the user to choose them first!"""
     debates = _load_debates()
     detected_platform = _detect_client_platform(client_platform)
+    profile = PLATFORM_PROFILES.get(detected_platform, PLATFORM_PROFILES["antigravity"])
     norm_participants = _normalize_participants(
         position_a,
         position_b,
@@ -401,6 +417,7 @@ def create_debate(
         "debate_id": debate_id,
         "topic": topic,
         "client_platform": detected_platform,
+        "execution_mode": execution_mode,
         "default_model": default_model,
         "default_effort": default_effort.strip().lower(),
         "position_a": norm_participants[0]["role"],
@@ -432,15 +449,34 @@ def create_debate(
         f"Position {p['id']} [Platform: {p['platform']}, Model: {p['model']}, Effort: {p['effort']}]: {p['role']}"
         for p in norm_participants
     )
+
+    mode_instructions = ""
+    if execution_mode == "subagents":
+        mode_instructions = (
+            f"\nMANDATORY EXECUTION RULES (execution_mode='subagents'):\n"
+            f"1. Do NOT post arguments for multiple positions from your main agent context.\n"
+            f"2. Spawn an isolated subagent for each position using {profile['subagent_tool']}.\n"
+            f"3. Pass each participant's configured model ('{default_model}') and effort_directive to its subagent.\n"
+            f"4. Each subagent MUST use a distinct agent_name (e.g. 'Subagent-A', 'Subagent-B'). Reusing the same agent_name across different positions will be rejected by post_argument.\n"
+            f"5. After all turns complete, score every turn with score_turn before calling close_debate."
+        )
+    elif execution_mode == "cross_client":
+        mode_instructions = (
+            f"\nMANDATORY EXECUTION RULES (execution_mode='cross_client'):\n"
+            f"1. Defend ONLY your assigned position in this client window.\n"
+            f"2. After calling post_argument for your position, call wait_for_turn to wait for the opposing AI client (Antigravity / Claude) to submit its turn."
+        )
+
     return (
         f"Debate '{debate_id}' created.\n"
         f"Topic: {topic}\n"
-        f"Detected Platform: {detected_platform}\n"
+        f"Platform: {detected_platform}\n"
+        f"Execution Mode: {execution_mode}\n"
         f"{participant_summary}\n"
         f"Max rounds: {max_rounds} ({max_rounds * len(norm_participants)} total turns)\n"
         f"Word limit per turn: {max_words}\n"
-        f"Strict turn order: {strict_turn_order}\n"
-        f"Next turn: Position {norm_participants[0]['id']}"
+        f"Next turn: Position {norm_participants[0]['id']}\n"
+        f"{mode_instructions}"
     )
 
 
@@ -462,6 +498,7 @@ def list_debates(status: str = "all") -> str:
                 "topic": info.get("topic"),
                 "status": info.get("status"),
                 "client_platform": info.get("client_platform", "antigravity"),
+                "execution_mode": info.get("execution_mode", "subagents"),
                 "default_model": info.get("default_model", "inherit"),
                 "default_effort": info.get("default_effort", "high"),
                 "turns_count": len(info.get("turns", [])),
@@ -493,7 +530,7 @@ def post_argument(
     effort: Optional[str] = None,
     force: bool = False,
 ) -> str:
-    """Post an argument or rebuttal to an open debate. Enforces turn order unless force=True."""
+    """Post an argument or rebuttal to an open debate. In 'subagents' and 'cross_client' modes, each position MUST have a distinct agent_name."""
     debates = _load_debates()
     if debate_id not in debates:
         return f"Debate '{debate_id}' not found."
@@ -511,7 +548,7 @@ def post_argument(
     if len(turns) >= max_turns:
         return (
             f"Debate '{debate_id}' has reached the maximum of {max_turns} turns. "
-            f"Please call close_debate to record a final verdict."
+            f"Score all turns with score_turn and then call close_debate."
         )
 
     requested_pos = position.strip().upper()
@@ -526,6 +563,32 @@ def post_argument(
 
     valid_ids = [p["id"].upper() for p in participants]
     normalized_pos = requested_pos if requested_pos in valid_ids else expected_pos
+
+    exec_mode = debate.get("execution_mode", "subagents")
+    if exec_mode != "single_agent" and not force:
+        clean_agent = agent_name.strip().lower()
+        conflicting_turn = next(
+            (
+                t
+                for t in turns
+                if str(t.get("agent", "")).strip().lower() == clean_agent
+                and str(t.get("position", "")).upper() != normalized_pos
+            ),
+            None,
+        )
+        if conflicting_turn:
+            mode_msg = (
+                f"You MUST spawn a separate isolated subagent (using Task/Agent in Claude or invoke_subagent in Antigravity) "
+                f"for Position '{normalized_pos}' and give it a distinct agent_name (e.g. 'Subagent-{normalized_pos}')."
+                if exec_mode == "subagents"
+                else f"In 'cross_client' mode, each AI client defends only its own position. Call wait_for_turn so the opposing client can post Position '{normalized_pos}'."
+            )
+            return (
+                f"MONOLOGUE BLOCKED (execution_mode='{exec_mode}'): "
+                f"Agent '{agent_name}' already defended Position '{conflicting_turn.get('position')}' and cannot also defend Position '{normalized_pos}'. "
+                f"{mode_msg}"
+            )
+
     participant_cfg = next(
         (p for p in participants if p["id"].upper() == normalized_pos), {}
     )
@@ -568,10 +631,32 @@ def post_argument(
     _save_debates(debates)
 
     remaining = max_turns - turn_number
+    next_participant = next(
+        (p for p in participants if p["id"].upper() == debate["next_expected_position"]),
+        {},
+    )
+    if remaining > 0:
+        if exec_mode == "subagents":
+            next_step_hint = (
+                f"\nNext action: Spawn/message the isolated subagent for Position {debate['next_expected_position']} "
+                f"[Model: {next_participant.get('model') or debate.get('default_model') or 'inherit'}, "
+                f"Effort: {next_participant.get('effort') or debate.get('default_effort') or 'high'}] with a distinct agent_name."
+            )
+        elif exec_mode == "cross_client":
+            next_step_hint = (
+                f"\nNext action: Call wait_for_turn for your position so the opposing client can post Position {debate['next_expected_position']}."
+            )
+        else:
+            next_step_hint = ""
+    else:
+        next_step_hint = (
+            f"\nAll {max_turns} turns are complete! Next action: Call score_turn for every turn (1..{max_turns}) before calling close_debate."
+        )
+
     return (
         f"Turn {turn_number} (Round {current_round}) recorded by {agent_name} "
         f"[Position {normalized_pos}, Model: {resolved_model}, Effort: {resolved_effort}, {word_count} words]. "
-        f"Remaining turns: {remaining}. Next expected position: {debate['next_expected_position']}.{word_warning}"
+        f"Remaining turns: {remaining}. Next expected position: {debate['next_expected_position']}.{word_warning}{next_step_hint}"
     )
 
 
@@ -745,20 +830,33 @@ def close_debate(
     debate_id: str,
     verdict: str,
     winner: Optional[str] = "synthesis",
+    force: bool = False,
 ) -> str:
-    """Close a debate and record the final synthesis, conclusion, or winning position."""
+    """Close a debate and record the final synthesis, conclusion, or winning position. Requires all turns to be scored via score_turn first (unless force=True)."""
     debates = _load_debates()
     if debate_id not in debates:
         return f"Debate '{debate_id}' not found."
 
     debate = debates[debate_id]
+    turns = debate.get("turns", [])
+    unscored = [str(t.get("turn")) for t in turns if not t.get("score")]
+
+    if turns and unscored and not force:
+        return (
+            f"CLOSE REJECTED: Unscored turns remain (Turns: {', '.join(unscored)}). "
+            f"You MUST call score_turn for every turn first so the Evaluation Scoreboard is populated before calling close_debate."
+        )
+
     debate["status"] = "closed"
     debate["verdict"] = verdict
     debate["winner"] = winner
     debate["closed_at"] = datetime.now(timezone.utc).isoformat()
     debate["scoreboard"] = _compute_scoreboard(debate)
     _save_debates(debates)
-    return f"Debate '{debate_id}' closed. Winner/Outcome: {winner}."
+    return (
+        f"Debate '{debate_id}' closed. Winner/Outcome: {winner}.\n"
+        f"Final Scoreboard:\n{json.dumps(debate['scoreboard'], indent=2, ensure_ascii=False)}"
+    )
 
 
 @mcp.tool()
@@ -777,52 +875,52 @@ def moderate_debate(
     topic: str = "",
     position_a: str = "",
     position_b: str = "",
+    execution_mode: str = "",
     model: str = "",
     effort: str = "",
     rounds: int = 3,
 ) -> str:
-    """Prompt template to start, moderate, or participate in a structured multi-agent debate with platform-specific model and effort selection."""
+    """Prompt template to start, moderate, or participate in a structured multi-agent debate with platform-specific model, effort, and execution mode selection."""
     detected_platform = _detect_client_platform()
     profile = PLATFORM_PROFILES.get(detected_platform, PLATFORM_PROFILES["antigravity"])
     has_topic = bool(topic and topic.strip() and topic.strip() != "undefined")
 
-    model_options_list = ", ".join(
-        f"'{m['id']}' ({m['label']})" for m in profile["models"]
-    )
     effort_options_list = ", ".join(
         f"'{e['id']}' ({e['label']})" for e in profile["efforts"]
     )
 
     if not has_topic:
         return (
-            f"I want to start a structured debate using the `roundtable-mcp` server.\n"
-            f"Detected client platform: **{profile['display_name']}** (`{detected_platform}`).\n\n"
+            f"I want to start a structured debate using the `roundtable-mcp` server.\n\n"
             f"Since I have not specified the parameters yet:\n"
             f"1. Call `list_debates` on `roundtable-mcp` to check if there is already an open debate to join.\n"
             f"2. Ask me (using your interactive question tool if available):\n"
-            f"   - **Topic and Positions** (or multiple roundtable roles).\n"
-            f"   - **Model for {profile['display_name']}**: {model_options_list}.\n"
+            f"   - **Execution Mode (`execution_mode`)**: 'subagents' (spawn isolated subagents in this client), 'cross_client' (live debate between Antigravity and Claude), or 'single_agent'.\n"
+            f"   - **Model**: If running in Antigravity: 'inherit', 'pro', 'flash', 'flash_lite'. If running in Claude: 'inherit', 'opus', 'sonnet', 'haiku'.\n"
             f"   - **Reasoning Effort**: {effort_options_list}.\n"
-            f"   - **Execution Mode**: Automated subagents in this session vs. Cross-client debate using `wait_for_turn`.\n"
-            f"3. Once I confirm, call `create_debate` passing `client_platform=\"{detected_platform}\"`, `default_model`, and `default_effort`. When spawning subagents, pass the selected `Model` parameter directly to your subagent tool and include the participant's `effort_directive` in its prompt."
+            f"   - **Topic and Positions** (or multiple roundtable roles).\n"
+            f"3. Once I confirm, call `create_debate` passing `client_platform`, `execution_mode`, `default_model`, and `default_effort`. In 'subagents' mode, spawn an isolated subagent per position with a distinct `agent_name`. Score every turn with `score_turn` before calling `close_debate`."
         )
 
+    resolved_mode = (
+        execution_mode if execution_mode and execution_mode != "undefined" else "subagents"
+    )
     resolved_model = model if model and model != "undefined" else "inherit"
     resolved_effort = effort if effort and effort != "undefined" else "high"
     return (
-        f"Start a structured debate using the roundtable-mcp tools on {profile['display_name']}.\n"
+        f"Start a structured debate using the roundtable-mcp tools.\n"
         f"Topic: {topic}\n"
         f"Position A: {position_a or 'Pro / Option A'}\n"
         f"Position B: {position_b or 'Con / Option B'}\n"
-        f"Platform: {detected_platform}\n"
+        f"Execution Mode: {resolved_mode}\n"
         f"Model: {resolved_model}\n"
         f"Effort: {resolved_effort}\n"
         f"Rounds: {rounds}\n\n"
         f"Instructions:\n"
-        f"1. Call create_debate with client_platform=\"{detected_platform}\", default_model=\"{resolved_model}\", and default_effort=\"{resolved_effort}\".\n"
-        f"2. Spawn subagents using the configured model ({resolved_model}) and inject the effort directive ({resolved_effort}) into their prompts.\n"
+        f"1. Call create_debate with client_platform ('claude' or 'antigravity'), execution_mode=\"{resolved_mode}\", default_model=\"{resolved_model}\", and default_effort=\"{resolved_effort}\".\n"
+        f"2. If execution_mode is 'subagents', spawn isolated subagents per position with distinct agent_name values using the configured model and effort directive.\n"
         f"3. Score each turn objectively using score_turn.\n"
-        f"4. After {rounds} rounds, call close_debate with a final verdict and offer to export the ADR via export_debate."
+        f"4. After {rounds} rounds, call close_debate with a final verdict and export the ADR via export_debate."
     )
 
 

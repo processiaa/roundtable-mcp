@@ -20,6 +20,7 @@ const PLATFORM_PROFILES = {
   antigravity: {
     platform: "antigravity",
     display_name: "Google Antigravity",
+    subagent_tool: "invoke_subagent (parameter Model: 'inherit' | 'pro' | 'flash' | 'flash_lite')",
     models: [
       { id: "inherit", label: "Inherit (Usar el modelo actual de la sesion)" },
       { id: "pro", label: "Pro (Maximo razonamiento arquitectonico)" },
@@ -41,7 +42,7 @@ const PLATFORM_PROFILES = {
       },
       {
         id: "low",
-        label: "Low ( Sintetico y rapido, enfocado en ideas clave)",
+        label: "Low (Sintetico y rapido, enfocado en ideas clave)",
         directive:
           "EFFORT=LOW: Be brief and direct, focusing only on the top 2 core arguments without extended deliberation.",
       },
@@ -50,6 +51,7 @@ const PLATFORM_PROFILES = {
   claude: {
     platform: "claude",
     display_name: "Anthropic Claude",
+    subagent_tool: "Task / Agent tool (parameter model: 'opus' | 'sonnet' | 'haiku')",
     models: [
       { id: "inherit", label: "Inherit (Usar el modelo actual de la sesion)" },
       { id: "opus", label: "Claude Opus (Maximo razonamiento complejo)" },
@@ -82,15 +84,21 @@ const PLATFORM_PROFILES = {
 function detectClientPlatform(mcpServer, explicitPlatform) {
   if (explicitPlatform) {
     const clean = String(explicitPlatform).trim().toLowerCase();
-    if (clean.includes("claude")) return "claude";
-    if (clean.includes("antigravity") || clean.includes("agy") || clean.includes("gemini")) {
+    if (clean.includes("claude") || clean.includes("anthropic")) return "claude";
+    if (
+      clean.includes("antigravity") ||
+      clean.includes("agy") ||
+      clean.includes("gemini")
+    ) {
       return "antigravity";
     }
   }
   try {
     const clientInfo = mcpServer?.getClientVersion?.();
     const clientName = String(clientInfo?.name || "").toLowerCase();
-    if (clientName.includes("claude")) return "claude";
+    if (clientName.includes("claude") || clientName.includes("anthropic")) {
+      return "claude";
+    }
     if (
       clientName.includes("antigravity") ||
       clientName.includes("agy") ||
@@ -101,10 +109,20 @@ function detectClientPlatform(mcpServer, explicitPlatform) {
   } catch {
     // ignore
   }
-  if (process.env.CLAUDECODE || process.env.CLAUDE_ENTRYPOINT || process.env.CLAUDE_CONFIG_DIR) {
+  const envKeys = Object.keys(process.env).join(" ").toUpperCase();
+  if (
+    process.env.CLAUDECODE ||
+    process.env.CLAUDE_ENTRYPOINT ||
+    process.env.CLAUDE_CONFIG_DIR ||
+    envKeys.includes("CLAUDE")
+  ) {
     return "claude";
   }
-  if (process.env.ANTIGRAVITY_CLI_ALIAS || process.env.AGY_ACCOUNT) {
+  if (
+    process.env.ANTIGRAVITY_CLI_ALIAS ||
+    process.env.AGY_ACCOUNT ||
+    envKeys.includes("ANTIGRAVITY")
+  ) {
     return "antigravity";
   }
   return "antigravity";
@@ -254,6 +272,7 @@ function formatDebateMarkdown(debate, format = "adr") {
       }`
     );
     lines.push(`- **Platform:** ${debate.client_platform || "antigravity"}`);
+    lines.push(`- **Execution Mode:** \`${debate.execution_mode || "subagents"}\``);
     lines.push(
       `- **Default Model / Effort:** \`${debate.default_model || "inherit"}\` / \`${
         debate.default_effort || "high"
@@ -339,6 +358,7 @@ function formatDebateMarkdown(debate, format = "adr") {
     lines.push("");
     lines.push(`- **ID:** \`${debate.debate_id}\``);
     lines.push(`- **Status:** ${debate.status}`);
+    lines.push(`- **Execution Mode:** ${debate.execution_mode || "subagents"}`);
     lines.push(`- **Rounds:** ${debate.max_rounds}`);
     lines.push("");
     lines.push("## Positions");
@@ -383,7 +403,7 @@ function sleep(ms) {
 const server = new Server(
   {
     name: "roundtable-mcp",
-    version: "0.3.0",
+    version: "0.4.0",
   },
   {
     capabilities: {
@@ -399,13 +419,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "get_client_models",
         description:
-          "Return the available models and effort levels for Antigravity ('inherit', 'pro', 'flash', 'flash_lite') or Claude ('inherit', 'opus', 'sonnet', 'haiku').",
+          "Return the available models and effort levels for Antigravity ('inherit', 'pro', 'flash', 'flash_lite') or Claude ('inherit', 'opus', 'sonnet', 'haiku'). Call this first if you need to check valid model/effort options.",
         inputSchema: {
           type: "object",
           properties: {
             platform: {
               type: "string",
-              description: "Optional platform override: 'antigravity' or 'claude'",
+              description: "Platform name: 'claude' or 'antigravity'",
             },
           },
         },
@@ -413,7 +433,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "create_debate",
         description:
-          "Create a new debate or N-participant roundtable session with a topic, positions/participants, model selection, effort level, and rules.",
+          "Create a new debate or N-participant roundtable session. " +
+          "MANDATORY PRE-CHECK: Before calling create_debate, if the user did NOT explicitly specify " +
+          "(1) execution_mode ('subagents' to spawn isolated subagents in this client, 'cross_client' to fight against another AI client like Antigravity vs Claude, or 'single_agent'), " +
+          "(2) default_model (Claude: 'inherit', 'opus', 'sonnet', 'haiku' | Antigravity: 'inherit', 'pro', 'flash', 'flash_lite'), and " +
+          "(3) default_effort ('high', 'medium', 'low'), you MUST ask the user to choose them first!",
         inputSchema: {
           type: "object",
           properties: {
@@ -425,6 +449,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "The topic or question to be debated",
             },
+            client_platform: {
+              type: "string",
+              enum: ["claude", "antigravity"],
+              description:
+                "REQUIRED: Set to 'claude' if you are Claude (Claude Code / Claude Desktop), or 'antigravity' if you are Google Antigravity.",
+            },
+            execution_mode: {
+              type: "string",
+              enum: ["subagents", "cross_client", "single_agent"],
+              description:
+                "REQUIRED: 'subagents' (spawn a separate isolated subagent per position using Task/Agent in Claude or invoke_subagent in Antigravity), 'cross_client' (live debate between two separate AI clients using wait_for_turn), or 'single_agent' (only when subagents are unavailable and user explicitly wants one agent to roleplay all sides).",
+            },
+            default_model: {
+              type: "string",
+              description:
+                "REQUIRED: Default model for participants. If client_platform='claude', choose 'inherit', 'opus', 'sonnet', or 'haiku'. If client_platform='antigravity', choose 'inherit', 'pro', 'flash', or 'flash_lite'.",
+            },
+            default_effort: {
+              type: "string",
+              enum: ["high", "medium", "low"],
+              description:
+                "REQUIRED: Reasoning effort ('high', 'medium', or 'low').",
+            },
             position_a: {
               type: "string",
               description:
@@ -435,26 +482,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description:
                 "Description of Position B (optional if participants is provided)",
             },
-            client_platform: {
-              type: "string",
-              description:
-                "Target platform ('antigravity' or 'claude'). Auto-detected if omitted.",
-            },
-            default_model: {
-              type: "string",
-              description:
-                "Default model for participants. Antigravity: 'inherit', 'pro', 'flash', 'flash_lite'. Claude: 'inherit', 'opus', 'sonnet', 'haiku'.",
-              default: "inherit",
-            },
-            default_effort: {
-              type: "string",
-              description: "Default reasoning effort: 'low', 'medium', or 'high'.",
-              default: "high",
-            },
             participants: {
               type: "array",
               description:
-                "Optional list of 2 or more participants with custom model/effort per role (e.g. [{'id': 'A', 'role': 'Cloud Architect', 'model': 'pro', 'effort': 'high'}, {'id': 'B', 'role': 'FinOps', 'model': 'flash', 'effort': 'medium'}])",
+                "List of 2 or more participants with optional custom model/effort per role (e.g. [{'id': 'A', 'role': 'Option A', 'model': 'opus', 'effort': 'high'}, {'id': 'B', 'role': 'Option B', 'model': 'sonnet', 'effort': 'high'}])",
               items: {
                 type: "object",
                 properties: {
@@ -488,7 +519,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 "Be concise, address the previous turn directly, and provide technical evidence.",
             },
           },
-          required: ["debate_id", "topic"],
+          required: [
+            "debate_id",
+            "topic",
+            "client_platform",
+            "execution_mode",
+            "default_model",
+            "default_effort",
+          ],
         },
       },
       {
@@ -524,7 +562,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "post_argument",
         description:
-          "Post an argument or rebuttal to an open debate. Enforces turn order unless force=true.",
+          "Post an argument or rebuttal to an open debate. In 'subagents' and 'cross_client' modes, each position MUST have a distinct agent_name (a single agent cannot post for multiple opposing positions).",
         inputSchema: {
           type: "object",
           properties: {
@@ -534,7 +572,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             agent_name: {
               type: "string",
-              description: "Name of the participating agent or client",
+              description:
+                "Unique name of the subagent or client defending this position (e.g. 'Subagent-A-Opus', 'Subagent-B-Sonnet', 'Antigravity-A', 'Claude-B'). Do NOT reuse the same agent_name across different positions.",
             },
             position: {
               type: "string",
@@ -566,7 +605,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "wait_for_turn",
         description:
-          "Wait until it is the specified position's turn in an open debate (useful when two separate AI clients are debating each other live).",
+          "Wait until it is the specified position's turn in an open debate (used in 'cross_client' mode when Antigravity and Claude are debating each other live).",
         inputSchema: {
           type: "object",
           properties: {
@@ -590,7 +629,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "score_turn",
         description:
-          "Score a specific turn using a structured rubric (1-10) and update the debate scoreboard.",
+          "Score a specific turn using a structured rubric (1-10) and update the debate scoreboard. All turns must be scored before calling close_debate.",
         inputSchema: {
           type: "object",
           properties: {
@@ -666,7 +705,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "close_debate",
         description:
-          "Close a debate and record the final synthesis, conclusion, or winning position.",
+          "Close a debate and record the final synthesis, conclusion, or winning position. Requires all turns to be scored via score_turn first (unless force=true).",
         inputSchema: {
           type: "object",
           properties: {
@@ -682,6 +721,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               description: "Winning position ('A', 'B', 'C', or 'synthesis')",
               default: "synthesis",
+            },
+            force: {
+              type: "boolean",
+              description: "Close even if some turns have not been scored yet",
+              default: false,
             },
           },
           required: ["debate_id", "verdict"],
@@ -736,6 +780,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       position_a,
       position_b,
       client_platform,
+      execution_mode = "subagents",
       default_model = "inherit",
       default_effort = "high",
       participants: rawParticipants,
@@ -746,6 +791,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } = args;
 
     const detectedPlatform = detectClientPlatform(server, client_platform);
+    const profile =
+      PLATFORM_PROFILES[detectedPlatform] || PLATFORM_PROFILES.antigravity;
     const participants = normalizeParticipants(
       position_a,
       position_b,
@@ -759,6 +806,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       debate_id,
       topic,
       client_platform: detectedPlatform,
+      execution_mode,
       default_model,
       default_effort: String(default_effort || "high").toLowerCase(),
       position_a: participants[0]?.role || position_a || "Position A",
@@ -791,6 +839,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       )
       .join("\n");
 
+    let modeInstructions = "";
+    if (execution_mode === "subagents") {
+      modeInstructions =
+        `\nMANDATORY EXECUTION RULES (execution_mode='subagents'):\n` +
+        `1. Do NOT post arguments for multiple positions from your main agent context.\n` +
+        `2. Spawn an isolated subagent for each position using ${profile.subagent_tool}.\n` +
+        `3. Pass each participant's configured model ('${default_model}') and effort_directive to its subagent.\n` +
+        `4. Each subagent MUST use a distinct agent_name (e.g. 'Subagent-A', 'Subagent-B'). Reusing the same agent_name across different positions will be rejected by post_argument.\n` +
+        `5. After all turns complete, score every turn with score_turn before calling close_debate.`;
+    } else if (execution_mode === "cross_client") {
+      modeInstructions =
+        `\nMANDATORY EXECUTION RULES (execution_mode='cross_client'):\n` +
+        `1. Defend ONLY your assigned position in this client window.\n` +
+        `2. After calling post_argument for your position, call wait_for_turn to wait for the opposing AI client (Antigravity / Claude) to submit its turn.`;
+    }
+
     return {
       content: [
         {
@@ -798,12 +862,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           text:
             `Debate '${debate_id}' created.\n` +
             `Topic: ${topic}\n` +
-            `Detected Platform: ${detectedPlatform}\n` +
+            `Platform: ${detectedPlatform}\n` +
+            `Execution Mode: ${execution_mode}\n` +
             `${participantSummary}\n` +
             `Max rounds: ${max_rounds} (${max_rounds * participants.length} total turns)\n` +
             `Word limit per turn: ${max_words}\n` +
-            `Strict turn order: ${strict_turn_order}\n` +
-            `Next turn: Position ${participants[0].id}`,
+            `Next turn: Position ${participants[0].id}\n` +
+            `${modeInstructions}`,
         },
       ],
     };
@@ -825,6 +890,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         topic: info.topic,
         status: info.status,
         client_platform: info.client_platform || "antigravity",
+        execution_mode: info.execution_mode || "subagents",
         default_model: info.default_model || "inherit",
         default_effort: info.default_effort || "high",
         turns_count: (info.turns || []).length,
@@ -898,7 +964,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [
           {
             type: "text",
-            text: `Debate '${debate_id}' has reached the maximum of ${maxTurns} turns. Please call close_debate to record a final verdict.`,
+            text: `Debate '${debate_id}' has reached the maximum of ${maxTurns} turns. Score all turns with score_turn and then call close_debate.`,
           },
         ],
       };
@@ -933,6 +999,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const normalizedPos = validIds.includes(requestedPos)
       ? requestedPos
       : expectedPos;
+
+    // Anti-monologue guardrail for 'subagents' and 'cross_client' modes
+    const execMode = debate.execution_mode || "subagents";
+    if (execMode !== "single_agent" && !force) {
+      const cleanAgent = String(agent_name || "").trim().toLowerCase();
+      const conflictingTurn = turns.find(
+        (t) =>
+          String(t.agent || "").trim().toLowerCase() === cleanAgent &&
+          String(t.position || "").toUpperCase() !== normalizedPos
+      );
+      if (conflictingTurn) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `MONOLOGUE BLOCKED (execution_mode='${execMode}'): ` +
+                `Agent '${agent_name}' already defended Position '${conflictingTurn.position}' and cannot also defend Position '${normalizedPos}'. ` +
+                (execMode === "subagents"
+                  ? `You MUST spawn a separate isolated subagent (using Task/Agent in Claude or invoke_subagent in Antigravity) for Position '${normalizedPos}' and give it a distinct agent_name (e.g. 'Subagent-${normalizedPos}').`
+                  : `In 'cross_client' mode, each AI client defends only its own position. Call wait_for_turn so the opposing client can post Position '${normalizedPos}'.`),
+            },
+          ],
+        };
+      }
+    }
+
     const participantConfig =
       participants.find((p) => p.id.toUpperCase() === normalizedPos) || {};
 
@@ -974,6 +1067,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     saveDebates(debates);
 
     const remaining = maxTurns - turnNumber;
+    const nextParticipant =
+      participants.find(
+        (p) => p.id.toUpperCase() === debate.next_expected_position
+      ) || {};
+
+    const nextStepHint =
+      remaining > 0
+        ? execMode === "subagents"
+          ? `\nNext action: Spawn/message the isolated subagent for Position ${debate.next_expected_position} [Model: ${
+              nextParticipant.model || debate.default_model || "inherit"
+            }, Effort: ${
+              nextParticipant.effort || debate.default_effort || "high"
+            }] with a distinct agent_name.`
+          : execMode === "cross_client"
+          ? `\nNext action: Call wait_for_turn for your position so the opposing client can post Position ${debate.next_expected_position}.`
+          : ""
+        : `\nAll ${maxTurns} turns are complete! Next action: Call score_turn for every turn (1..${maxTurns}) before calling close_debate.`;
+
     return {
       content: [
         {
@@ -981,7 +1092,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           text:
             `Turn ${turnNumber} (Round ${currentRound}) recorded by ${agent_name} ` +
             `[Position ${normalizedPos}, Model: ${resolvedModel}, Effort: ${resolvedEffort}, ${wordCount} words]. ` +
-            `Remaining turns: ${remaining}. Next expected position: ${debate.next_expected_position}.${wordWarning}`,
+            `Remaining turns: ${remaining}. Next expected position: ${debate.next_expected_position}.${wordWarning}${nextStepHint}`,
         },
       ],
     };
@@ -1207,13 +1318,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "close_debate") {
     const debates = loadDebates();
-    const { debate_id, verdict, winner = "synthesis" } = args;
+    const { debate_id, verdict, winner = "synthesis", force = false } = args;
     if (!debates[debate_id]) {
       return {
         content: [{ type: "text", text: `Debate '${debate_id}' not found.` }],
       };
     }
     const debate = debates[debate_id];
+    const turns = debate.turns || [];
+    const unscored = turns.filter((t) => !t.score).map((t) => t.turn);
+
+    if (turns.length > 0 && unscored.length > 0 && !force) {
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `CLOSE REJECTED: Unscored turns remain (Turns: ${unscored.join(
+                ", "
+              )}). ` +
+              `You MUST call score_turn for every turn first so the Evaluation Scoreboard is populated before calling close_debate.`,
+          },
+        ],
+      };
+    }
+
     debate.status = "closed";
     debate.verdict = verdict;
     debate.winner = winner;
@@ -1225,7 +1354,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [
         {
           type: "text",
-          text: `Debate '${debate_id}' closed. Winner/Outcome: ${winner}.`,
+          text: `Debate '${debate_id}' closed. Winner/Outcome: ${winner}.\nFinal Scoreboard:\n${JSON.stringify(
+            debate.scoreboard,
+            null,
+            2
+          )}`,
         },
       ],
     };
@@ -1255,11 +1388,16 @@ server.setRequestHandler(ListPromptsRequestSchema, async () => {
       {
         name: "moderate_debate",
         description:
-          "Prompt template to start, moderate, or participate in a structured multi-agent debate with platform-specific model and effort selection.",
+          "Prompt template to start, moderate, or participate in a structured multi-agent debate with platform-specific model, effort, and execution mode selection.",
         arguments: [
           { name: "topic", description: "Debate topic", required: false },
           { name: "position_a", description: "Position A", required: false },
           { name: "position_b", description: "Position B", required: false },
+          {
+            name: "execution_mode",
+            description: "Execution mode: subagents, cross_client, or single_agent",
+            required: false,
+          },
           {
             name: "model",
             description:
@@ -1307,16 +1445,15 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
           content: {
             type: "text",
             text:
-              `I want to start a structured debate using the \`roundtable-mcp\` server.\n` +
-              `Detected client platform: **${profile.display_name}** (\`${detectedPlatform}\`).\n\n` +
+              `I want to start a structured debate using the \`roundtable-mcp\` server.\n\n` +
               `Since I have not specified the parameters yet:\n` +
               `1. Call \`list_debates\` on \`roundtable-mcp\` to check if there is already an open debate to join.\n` +
               `2. Ask me (using your interactive question tool if available):\n` +
-              `   - **Topic and Positions** (or multiple roundtable roles).\n` +
-              `   - **Model for ${profile.display_name}**: ${modelOptionsList}.\n` +
+              `   - **Execution Mode (\`execution_mode\`)**: 'subagents' (spawn isolated subagents in this client), 'cross_client' (live debate between Antigravity and Claude), or 'single_agent'.\n` +
+              `   - **Model**: If running in Antigravity: 'inherit', 'pro', 'flash', 'flash_lite'. If running in Claude: 'inherit', 'opus', 'sonnet', 'haiku'.\n` +
               `   - **Reasoning Effort**: ${effortOptionsList}.\n` +
-              `   - **Execution Mode**: Automated subagents in this session vs. Cross-client debate using \`wait_for_turn\`.\n` +
-              `3. Once I confirm, call \`create_debate\` passing \`client_platform="${detectedPlatform}"\`, \`default_model\`, and \`default_effort\`. When spawning subagents, pass the selected \`Model\` parameter directly to your subagent tool and include the participant's \`effort_directive\` in its prompt.`,
+              `   - **Topic and Positions** (or multiple roundtable roles).\n` +
+              `3. Once I confirm, call \`create_debate\` passing \`client_platform\`, \`execution_mode\`, \`default_model\`, and \`default_effort\`. In 'subagents' mode, spawn an isolated subagent per position with a distinct \`agent_name\`. Score every turn with \`score_turn\` before calling \`close_debate\`.`,
           },
         },
       ],
@@ -1330,25 +1467,23 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
         content: {
           type: "text",
           text:
-            `Start a structured debate using the roundtable-mcp tools on ${profile.display_name}.\n` +
+            `Start a structured debate using the roundtable-mcp tools.\n` +
             `Topic: ${args.topic}\n` +
             `Position A: ${args.position_a || "Pro / Option A"}\n` +
             `Position B: ${args.position_b || "Con / Option B"}\n` +
-            `Platform: ${detectedPlatform}\n` +
+            `Execution Mode: ${args.execution_mode || "subagents"}\n` +
             `Model: ${args.model || "inherit"}\n` +
             `Effort: ${args.effort || "high"}\n` +
             `Rounds: ${rounds}\n\n` +
             `Instructions:\n` +
-            `1. Call create_debate with client_platform="${detectedPlatform}", default_model="${
-              args.model || "inherit"
-            }", and default_effort="${args.effort || "high"}".\n` +
-            `2. Spawn subagents using the configured model (${
-              args.model || "inherit"
-            }) and inject the effort directive (${
+            `1. Call create_debate with client_platform ('claude' or 'antigravity'), execution_mode="${
+              args.execution_mode || "subagents"
+            }", default_model="${args.model || "inherit"}", and default_effort="${
               args.effort || "high"
-            }) into their prompts.\n` +
+            }".\n` +
+            `2. If execution_mode is 'subagents', spawn isolated subagents per position with distinct agent_name values using the configured model and effort directive.\n` +
             `3. Score each turn objectively using score_turn.\n` +
-            `4. After ${rounds} rounds, call close_debate with a final verdict and offer to export the ADR via export_debate.`,
+            `4. After ${rounds} rounds, call close_debate with a final verdict and export the ADR via export_debate.`,
         },
       },
     ],
