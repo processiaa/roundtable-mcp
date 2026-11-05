@@ -1,15 +1,22 @@
 {
   "name": "roundtable-mcp",
-  "version": "0.4.0",
-  "description": "MCP server for multi-agent debates across Antigravity, Claude, ChatGPT, and Cursor",
+  "version": "0.5.0",
+  "description": "MCP server for structured multi-agent debates across Claude and Google Antigravity",
   "license": "MIT",
   "type": "module",
   "bin": {
     "roundtable-mcp": "./bin/server.js"
   },
   "main": "./bin/server.js",
+  "files": [
+    "bin",
+    "lib",
+    "skills",
+    "README.md"
+  ],
   "scripts": {
-    "start": "node ./bin/server.js"
+    "start": "node ./bin/server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

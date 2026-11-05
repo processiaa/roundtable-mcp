@@ -19,7 +19,13 @@ Before calling `create_debate`, if the user has not specified the following para
    - **Claude (`client_platform: "claude"`):** `inherit`, `opus`, `sonnet`, `haiku`.
 3. **`default_effort`:** `high`, `medium`, or `low`.
 
+Pick a new `debate_id` (letters, digits, `.`, `_`, `-`). `create_debate` fails if it already exists; only pass `overwrite: true` if the user agrees to lose that debate.
+
 ## Enforcement Rules
 
+- **Errors:** Rejections come back as tool errors (`isError: true`). Read the message, fix the call, and retry; do not use `force` to get around them.
 - **Anti-Monologue Guardrail:** In `subagents` and `cross_client` modes, `post_argument` rejects any attempt by the same `agent_name` to post for multiple opposing positions. Each position must be defended by its own isolated subagent (with a unique `agent_name`, e.g. `Subagent-A-Opus`, `Subagent-B-Sonnet`) or separate client.
-- **Scoreboard Guardrail:** Before calling `close_debate`, you must score every turn (`1..N`) using `score_turn` (`technical_evidence`, `rebuttal_strength`, `operational_viability`, `clarity`).
+- **Word Limit:** Tell each subagent the `max_words` limit. Arguments above `max_words` +15% are rejected and must be shortened and posted again.
+- **Waiting:** In `cross_client` mode, `wait_for_turn` returns `timeout` after ~50 s; call it again until you get `your_turn`, `max_turns_reached` or `debate_closed`.
+- **Scoreboard Guardrail:** Before calling `close_debate`, you must score every turn (`1..N`) using `score_turn` (`technical_evidence`, `rebuttal_strength`, `operational_viability`, `clarity`, each 1-10).
+- **Export:** `export_debate` without `output_path` saves to `~/.roundtable_mcp/exports`. To save into the user's repository use a relative `.md` path such as `docs/adr/001-topic.md`; existing files there are never overwritten, so choose a new name.
